@@ -1,5 +1,5 @@
 import pandas as pd
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 import logging
 from datetime import datetime
 import re
@@ -11,7 +11,14 @@ class TransformationEngine:
     """Engine for applying data transformations"""
     
     @staticmethod
-    def apply_transformations(df: pd.DataFrame, transformations: List[Dict[str, Any]]) -> pd.DataFrame:
+    def apply_transformations(
+        df: pd.DataFrame,
+        transformations: List[Dict[str, Any]],
+        source_connector=None,
+        db_session=None,
+        database_name: str = "",
+        table_name: str = ""
+    ) -> pd.DataFrame:
         """
         Apply a list of transformations to a DataFrame
         
@@ -32,13 +39,21 @@ class TransformationEngine:
         
         result_df = df.copy()
         
+        # Create context for variable resolution
+        context = {
+            'source_connector': source_connector,
+            'db_session': db_session,
+            'database_name': database_name,
+            'table_name': table_name
+        }
+        
         for transform in transformations:
             transform_type = transform.get('type')
             config = transform.get('config', {})
             
             try:
                 if transform_type == 'add_column':
-                    result_df = TransformationEngine._add_column(result_df, config)
+                    result_df = TransformationEngine._add_column(result_df, config, context)
                 
                 elif transform_type == 'rename_column':
                     result_df = TransformationEngine._rename_column(result_df, config)
@@ -50,10 +65,10 @@ class TransformationEngine:
                     result_df = TransformationEngine._cast_type(result_df, config)
                 
                 elif transform_type == 'filter_rows':
-                    result_df = TransformationEngine._filter_rows(result_df, config)
+                    result_df = TransformationEngine._filter_rows(result_df, config, context)
                 
                 elif transform_type == 'replace_value':
-                    result_df = TransformationEngine._replace_value(result_df, config)
+                    result_df = TransformationEngine._replace_value(result_df, config, context)
                 
                 elif transform_type == 'concatenate_columns':
                     result_df = TransformationEngine._concatenate_columns(result_df, config)
@@ -74,12 +89,47 @@ class TransformationEngine:
         return result_df
     
     @staticmethod
-    def _add_column(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
+    def _resolve_variable_value(value: Any, context: Dict[str, Any]) -> Any:
+        """
+        Resolve variable values (strings starting with $)
+        If value cannot be resolved, return it as-is
+        """
+        logger.info(f"[TRANSFORM] _resolve_variable_value called with value: {value} (type: {type(value).__name__})")
+        
+        if not isinstance(value, str) or not value.startswith('$'):
+            logger.info(f"[TRANSFORM] Value is not a variable string, returning as-is: {value}")
+            return value
+        
+        try:
+            from services.variable_resolver import VariableResolver
+            
+            logger.info(f"[TRANSFORM] Resolving variable: {value}")
+            logger.info(f"[TRANSFORM] Context: db_session={context.get('db_session') is not None}, source_connector={context.get('source_connector') is not None}, database={context.get('database_name')}, table={context.get('table_name')}")
+            
+            # Create resolver with context
+            resolver = VariableResolver(
+                db=context.get('db_session'),
+                source_connector=context.get('source_connector'),
+                database_name=context.get('database_name'),
+                table_name=context.get('table_name')
+            )
+            
+            # Resolve the variable
+            resolved = resolver.resolve(value)
+            
+            logger.info(f"[TRANSFORM] ✓ Resolved transformation variable: {value} -> {resolved}")
+            return resolved
+        except Exception as e:
+            logger.error(f"[TRANSFORM] ✗ Could not resolve variable {value}: {str(e)}. Using as-is.", exc_info=True)
+            return value
+    
+    @staticmethod
+    def _add_column(df: pd.DataFrame, config: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
         Add a new column
         Config: {
             "column_name": "new_col",
-            "value": "constant_value" or expression,
+            "value": "constant_value" or expression (can be variable like $ETLCustomerId),
             "expression_type": "constant" | "column_reference" | "function"
         }
         """
@@ -87,8 +137,19 @@ class TransformationEngine:
         value = config.get('value')
         expression_type = config.get('expression_type', 'constant')
         
+        logger.info(f"[TRANSFORM] add_column: column_name={column_name}, value={value}, expression_type={expression_type}, context={context is not None}")
+        
         if expression_type == 'constant':
-            df[column_name] = value
+            # Check if value is a variable (starts with $)
+            if context:
+                logger.info(f"[TRANSFORM] Resolving value with context...")
+                resolved_value = TransformationEngine._resolve_variable_value(value, context)
+            else:
+                logger.info(f"[TRANSFORM] No context provided, using value as-is")
+                resolved_value = value
+            
+            logger.info(f"[TRANSFORM] Adding column '{column_name}' with value: {resolved_value}")
+            df[column_name] = resolved_value
         
         elif expression_type == 'column_reference':
             # Reference another column
@@ -151,18 +212,22 @@ class TransformationEngine:
         return df
     
     @staticmethod
-    def _filter_rows(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
+    def _filter_rows(df: pd.DataFrame, config: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
         Filter rows based on condition
         Config: {
             "column_name": "col1",
             "operator": "==", ">", "<", ">=", "<=", "!=", "in", "not_in",
-            "value": value_to_compare
+            "value": value_to_compare (can be variable like $ETLCustomerId)
         }
         """
         column_name = config.get('column_name')
         operator = config.get('operator')
         value = config.get('value')
+        
+        # Resolve variable if needed
+        if context:
+            value = TransformationEngine._resolve_variable_value(value, context)
         
         if column_name not in df.columns:
             return df
@@ -187,18 +252,23 @@ class TransformationEngine:
         return df
     
     @staticmethod
-    def _replace_value(df: pd.DataFrame, config: Dict[str, Any]) -> pd.DataFrame:
+    def _replace_value(df: pd.DataFrame, config: Dict[str, Any], context: Optional[Dict[str, Any]] = None) -> pd.DataFrame:
         """
         Replace values in a column
         Config: {
             "column_name": "col1",
-            "old_value": "old",
-            "new_value": "new"
+            "old_value": "old" (can be variable),
+            "new_value": "new" (can be variable)
         }
         """
         column_name = config.get('column_name')
         old_value = config.get('old_value')
         new_value = config.get('new_value')
+        
+        # Resolve variables if needed
+        if context:
+            old_value = TransformationEngine._resolve_variable_value(old_value, context)
+            new_value = TransformationEngine._resolve_variable_value(new_value, context)
         
         if column_name in df.columns:
             df[column_name] = df[column_name].replace(old_value, new_value)

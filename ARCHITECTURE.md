@@ -1,538 +1,699 @@
-# DTaaS Architecture Documentation
+# DTaaS - Production Architecture
 
 ## System Overview
 
-DTaaS (Data Transfer as a Service) is a distributed web application designed to transfer data between heterogeneous data sources with support for both batch (full load) and real-time (CDC) synchronization.
+DTaaS is a production-grade, distributed data transfer platform designed for enterprise-scale data synchronization between heterogeneous data sources. It supports both batch (full load) and real-time (CDC) data replication with built-in resilience, monitoring, and scalability.
 
-## Architecture Diagram
+## High-Level Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────────┐
-│                         Frontend Layer                           │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Vue 3 Application                                        │  │
-│  │  ├─ Dashboard (Metrics & Monitoring)                      │  │
-│  │  ├─ Connectors (Source/Destination Management)            │  │
-│  │  ├─ Tasks (Task Management & Control)                     │  │
-│  │  └─ Task Builder (Visual Drag-and-Drop)                   │  │
-│  │                                                            │  │
-│  │  State Management: Pinia                                  │  │
-│  │  UI Framework: Element Plus                               │  │
-│  │  Flow Builder: Vue Flow                                   │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└──────────────────┬──────────────────────────────────────────────┘
-                   │ HTTP/REST + WebSocket
-                   ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                         API Layer                                │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  FastAPI Application                                      │  │
-│  │  ├─ /api/connectors/* (Connector CRUD)                    │  │
-│  │  ├─ /api/tasks/* (Task CRUD & Control)                    │  │
-│  │  ├─ /api/dashboard/* (Metrics & Stats)                    │  │
-│  │  └─ /ws (WebSocket for Real-time Updates)                 │  │
-│  │                                                            │  │
-│  │  Middleware: CORS, Error Handling                         │  │
-│  │  Authentication: (Future Enhancement)                     │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└──────────────────┬──────────────────────────────────────────────┘
-                   │
-          ┌────────┴────────┐
-          ▼                 ▼
-┌─────────────────┐  ┌─────────────────┐
-│  Service Layer  │  │  Task Queue     │
-│                 │  │  (Celery)       │
-│  ┌───────────┐  │  │                 │
-│  │Connector  │  │  │  Workers:       │
-│  │Service    │  │  │  - execute_task │
-│  └───────────┘  │  │  - cdc_polling  │
-│  ┌───────────┐  │  │  - start/stop   │
-│  │Task       │  │  │  - pause/resume │
-│  │Service    │  │  │                 │
-│  └───────────┘  │  │  Pool: Solo/    │
-│  ┌───────────┐  │  │        Prefork  │
-│  │Transfer   │  │  └─────────────────┘
-│  │Service    │  │           │
-│  └───────────┘  │           │ Broker
-└────────┬────────┘           ▼
-         │            ┌─────────────────┐
-         │            │  Redis          │
-         │            │  - Task Queue   │
-         │            │  - Results      │
-         │            │  - State        │
-         │            └─────────────────┘
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                      Data Layer                                  │
-│  ┌──────────────────────────────────────────────────────────┐  │
-│  │  Metadata Database (SQLite/PostgreSQL)                    │  │
-│  │  ├─ connectors (Connection configs)                       │  │
-│  │  ├─ tasks (Transfer job definitions)                      │  │
-│  │  ├─ task_executions (Execution logs)                      │  │
-│  │  ├─ table_executions (Per-table metrics)                  │  │
-│  │  └─ system_metrics (Performance data)                     │  │
-│  │                                                            │  │
-│  │  ORM: SQLAlchemy                                          │  │
-│  └──────────────────────────────────────────────────────────┘  │
-└─────────────────────────────────────────────────────────────────┘
-         │
-         ▼
-┌─────────────────────────────────────────────────────────────────┐
-│                   Connector Layer                                │
-│  ┌──────────────┐  ┌──────────────┐  ┌──────────────┐          │
-│  │  Source      │  │ Destination  │  │ Destination  │          │
-│  │  SQL Server  │  │  Snowflake   │  │  AWS S3      │          │
-│  │              │  │              │  │              │          │
-│  │ - Table List │  │ - Bulk Load  │  │ - Parquet    │          │
-│  │ - Schema     │  │ - Staging    │  │ - CSV        │          │
-│  │ - Full Load  │  │ - Copy       │  │ - JSON       │          │
-│  │ - CDC        │  │ - Schema     │  │ - Partition  │          │
-│  │ - LSN Track  │  │   Evolution  │  │              │          │
-│  └──────────────┘  └──────────────┘  └──────────────┘          │
-└─────────────────────────────────────────────────────────────────┘
-         │                     │                   │
-         ▼                     ▼                   ▼
-┌──────────────┐    ┌──────────────┐    ┌──────────────┐
-│  SQL Server  │    │  Snowflake   │    │   AWS S3     │
-│   Database   │    │   Warehouse  │    │   Bucket     │
-└──────────────┘    └──────────────┘    └──────────────┘
+┌─────────────────────────────────────────────────────────────────────┐
+│                      Production Architecture                         │
+└─────────────────────────────────────────────────────────────────────┘
+
+                          Internet/VPN
+                               │
+                    ┌──────────┴──────────┐
+                    │  Load Balancer      │
+                    │  (SSL/TLS)          │
+                    └──────────┬──────────┘
+                               │
+        ┌──────────────────────┼──────────────────────┐
+        │                      │                      │
+        ▼                      ▼                      ▼
+┌──────────────┐    ┌──────────────┐      ┌──────────────┐
+│   Frontend   │    │   Backend    │      │   Backend    │
+│   (Nginx)    │    │   API (1)    │      │   API (2)    │
+│              │    │              │      │              │
+│ Static Files │    │  FastAPI     │      │  FastAPI     │
+│ + SPA        │    │  + WebSocket │      │  + WebSocket │
+└──────────────┘    └──────┬───────┘      └──────┬───────┘
+                           │                      │
+                           └──────────┬───────────┘
+                                      │
+                    ┌─────────────────┼─────────────────┐
+                    │                 │                 │
+                    ▼                 ▼                 ▼
+            ┌──────────────┐  ┌──────────────┐  ┌──────────────┐
+            │   Celery     │  │   Celery     │  │   Celery     │
+            │   Worker 1   │  │   Worker 2   │  │   Worker N   │
+            │              │  │              │  │              │
+            │ Task Exec    │  │ Task Exec    │  │ Task Exec    │
+            │ CDC Polling  │  │ CDC Polling  │  │ CDC Polling  │
+            └──────┬───────┘  └──────┬───────┘  └──────┬───────┘
+                   │                 │                 │
+                   └─────────────────┼─────────────────┘
+                                     │
+                    ┌────────────────┼────────────────┐
+                    │                │                │
+                    ▼                ▼                ▼
+        ┌──────────────────┐  ┌──────────────┐  ┌──────────────┐
+        │  Redis Cluster   │  │ PostgreSQL   │  │  Monitoring  │
+        │  (HA + Sentinel) │  │ (Primary +   │  │  (Prometheus │
+        │                  │  │  Replicas)   │  │  + Grafana)  │
+        │ - Task Queue     │  │              │  │              │
+        │ - Results        │  │ - Metadata   │  │ - Metrics    │
+        │ - Cache          │  │ - State      │  │ - Logs       │
+        └──────────────────┘  └──────────────┘  └──────────────┘
+                   │                 │
+                   └────────┬────────┘
+                            │
+            ┌───────────────┼───────────────┐
+            │               │               │
+            ▼               ▼               ▼
+    ┌──────────────┐ ┌──────────────┐ ┌──────────────┐
+    │  SQL Server  │ │  Snowflake   │ │   AWS S3     │
+    │  (Source)    │ │ (Destination)│ │ (Destination)│
+    └──────────────┘ └──────────────┘ └──────────────┘
 ```
 
-## Component Details
+## Core Components
 
-### 1. Frontend Layer
-
-**Technology Stack:**
-- Vue 3 (Composition API)
-- Pinia (State Management)
-- Vue Router (Navigation)
-- Element Plus (UI Components)
-- Vue Flow (Visual Builder)
-- Axios (HTTP Client)
-- Chart.js (Visualization)
+### 1. API Layer (FastAPI)
 
 **Responsibilities:**
-- User interface rendering
-- User interaction handling
-- State management
-- API communication
-- Real-time updates via WebSocket
-- Visual task builder
-
-**Key Features:**
-- Responsive dashboard with metrics
-- Connector CRUD operations
-- Task creation and management
-- Drag-and-drop task builder
-- Real-time progress monitoring
-- Execution history visualization
-
-### 2. API Layer
-
-**Technology Stack:**
-- FastAPI (Web Framework)
-- Uvicorn (ASGI Server)
-- Pydantic (Data Validation)
-- WebSocket (Real-time Communication)
-
-**Endpoints:**
-
-**Connectors:**
-- `POST /api/connectors/` - Create connector
-- `GET /api/connectors/` - List connectors
-- `GET /api/connectors/{id}` - Get connector
-- `PUT /api/connectors/{id}` - Update connector
-- `DELETE /api/connectors/{id}` - Delete connector
-- `POST /api/connectors/{id}/test` - Test connection
-- `GET /api/connectors/{id}/tables` - List tables
-
-**Tasks:**
-- `POST /api/tasks/` - Create task
-- `GET /api/tasks/` - List tasks
-- `GET /api/tasks/{id}` - Get task
-- `PUT /api/tasks/{id}` - Update task
-- `DELETE /api/tasks/{id}` - Delete task
-- `POST /api/tasks/{id}/control` - Control (start/stop/pause/resume)
-- `GET /api/tasks/{id}/executions` - Get execution history
-
-**Dashboard:**
-- `GET /api/dashboard/metrics` - Get system metrics
-
-**WebSocket:**
-- `WS /ws` - Real-time updates
-
-**Responsibilities:**
-- Request validation
+- REST API endpoints for CRUD operations
+- WebSocket server for real-time updates
+- Request validation and authentication
 - Business logic orchestration
-- Database operations
-- Task queue management
-- Real-time event broadcasting
-- Error handling
+- Rate limiting and throttling
 
-### 3. Service Layer
+**Technology:**
+- FastAPI 0.104+ (async/await support)
+- Uvicorn ASGI server
+- Pydantic for validation
+- JWT for authentication (production)
 
-**ConnectorService:**
-- Manages connector lifecycle
-- Tests connections
-- Discovers tables and schemas
-- Factory pattern for connector instances
+**Scaling:**
+- Stateless design for horizontal scaling
+- Multiple instances behind load balancer
+- Sticky sessions for WebSocket connections
+- Connection pooling for database
 
-**TaskService:**
-- Task CRUD operations
-- Execution tracking
-- Status management
-- History management
+**Health Check Endpoint:**
+```python
+GET /health
+Response: {"status": "healthy", "version": "1.0.0"}
+```
 
-**TransferService:**
-- Orchestrates data transfers
-- Handles full load operations
-- Manages CDC synchronization
-- Schema drift detection
-- Transformation application
-- Progress tracking
+### 2. Task Queue (Celery)
 
-### 4. Task Queue (Celery)
+**Responsibilities:**
+- Asynchronous task execution
+- Task scheduling and retry logic
+- Distributed task processing
+- Result tracking and persistence
 
-**Workers:**
+**Task Types:**
 - `execute_task` - Full load execution
 - `execute_cdc_polling` - CDC synchronization
 - `start_task` - Task initialization
-- `stop_task` - Task termination
-- `pause_task` - Pause execution
-- `resume_task` - Resume execution
+- `stop_task` - Graceful task termination
 
 **Configuration:**
-- Broker: Redis
+- Broker: Redis (with persistence)
 - Result Backend: Redis
 - Serializer: JSON
-- Task tracking enabled
-- Time limit: 12 hours
-- Pool: Solo (Windows) / Prefork (Linux)
+- Prefetch Multiplier: 4
+- Task Time Limit: 12 hours
+- Soft Time Limit: 11 hours
 
-### 5. Data Layer
+**Worker Deployment:**
+```bash
+# Production worker with concurrency
+celery -A celery_app worker \
+  --loglevel=info \
+  --concurrency=4 \
+  --max-tasks-per-child=100 \
+  --time-limit=43200
+```
 
-**Database Schema:**
+### 3. Message Broker (Redis Cluster)
+
+**Responsibilities:**
+- Task queue management
+- Result storage
+- Distributed locking
+- Cache layer
+
+**Production Setup:**
+- Redis Cluster mode (3+ nodes)
+- Redis Sentinel for HA
+- AOF + RDB persistence
+- Memory limit with eviction policy
+- Regular backups
+
+**Configuration:**
+```redis
+# Redis config for production
+maxmemory 4gb
+maxmemory-policy allkeys-lru
+appendonly yes
+appendfsync everysec
+save 900 1
+save 300 10
+```
+
+### 4. Metadata Database (PostgreSQL)
+
+**Schema:**
 
 ```sql
--- Connectors
+-- Connectors (source/destination configurations)
 CREATE TABLE connectors (
-    id INTEGER PRIMARY KEY,
-    name VARCHAR(255) UNIQUE,
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
     description TEXT,
-    connector_type VARCHAR(20),
+    connector_type VARCHAR(20) NOT NULL,
     source_type VARCHAR(50),
     destination_type VARCHAR(50),
-    connection_config JSON,
-    is_active BOOLEAN,
-    created_at DATETIME,
-    updated_at DATETIME,
-    last_tested_at DATETIME,
+    connection_config JSONB NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_tested_at TIMESTAMP,
     test_status VARCHAR(20)
 );
 
--- Tasks
+CREATE INDEX idx_connectors_type ON connectors(connector_type);
+CREATE INDEX idx_connectors_active ON connectors(is_active);
+
+-- Tasks (transfer job definitions)
 CREATE TABLE tasks (
-    id INTEGER PRIMARY KEY,
-    name VARCHAR(255) UNIQUE,
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
     description TEXT,
-    source_connector_id INTEGER,
-    destination_connector_id INTEGER,
-    source_tables JSON,
-    table_mappings JSON,
-    mode VARCHAR(30),
-    batch_size_mb FLOAT,
-    batch_rows INTEGER,
-    schedule_type VARCHAR(20),
+    source_connector_id INTEGER REFERENCES connectors(id),
+    destination_connector_id INTEGER REFERENCES connectors(id),
+    source_tables JSONB NOT NULL,
+    table_configs JSONB,
+    mode VARCHAR(30) NOT NULL,
+    batch_size_mb FLOAT DEFAULT 100,
+    batch_rows INTEGER DEFAULT 50000,
+    parallel_tables INTEGER DEFAULT 1,
+    schedule_type VARCHAR(20) NOT NULL,
     schedule_interval_seconds INTEGER,
     s3_file_format VARCHAR(20),
-    transformations JSON,
-    handle_schema_drift BOOLEAN,
-    status VARCHAR(20),
-    current_progress_percent FLOAT,
-    is_active BOOLEAN,
-    created_at DATETIME,
-    updated_at DATETIME,
-    last_run_at DATETIME,
-    cdc_enabled_tables JSON,
-    last_cdc_poll_at DATETIME
+    handle_schema_drift BOOLEAN DEFAULT true,
+    retry_enabled BOOLEAN DEFAULT true,
+    max_retries INTEGER DEFAULT 3,
+    retry_delay_seconds INTEGER DEFAULT 20,
+    cleanup_on_retry BOOLEAN DEFAULT true,
+    status VARCHAR(20) NOT NULL,
+    current_progress_percent FLOAT DEFAULT 0,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    last_run_at TIMESTAMP,
+    cdc_enabled_tables JSONB,
+    last_cdc_poll_at TIMESTAMP
 );
 
--- Task Executions
+CREATE INDEX idx_tasks_status ON tasks(status);
+CREATE INDEX idx_tasks_source ON tasks(source_connector_id);
+CREATE INDEX idx_tasks_destination ON tasks(destination_connector_id);
+CREATE INDEX idx_tasks_active ON tasks(is_active);
+
+-- Task Executions (execution logs and metrics)
 CREATE TABLE task_executions (
-    id INTEGER PRIMARY KEY,
-    task_id INTEGER,
-    execution_type VARCHAR(20),
-    status VARCHAR(20),
-    total_rows INTEGER,
-    processed_rows INTEGER,
-    failed_rows INTEGER,
-    progress_percent FLOAT,
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+    execution_type VARCHAR(20) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    total_rows BIGINT DEFAULT 0,
+    processed_rows BIGINT DEFAULT 0,
+    failed_rows BIGINT DEFAULT 0,
+    progress_percent FLOAT DEFAULT 0,
     rows_per_second FLOAT,
     data_size_mb FLOAT,
-    started_at DATETIME,
-    completed_at DATETIME,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
     duration_seconds FLOAT,
     error_message TEXT,
     cdc_lsn_start VARCHAR(100),
     cdc_lsn_end VARCHAR(100),
-    schema_changes_detected JSON,
-    created_at DATETIME
+    schema_changes_detected JSONB,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE INDEX idx_executions_task ON task_executions(task_id);
+CREATE INDEX idx_executions_status ON task_executions(status);
+CREATE INDEX idx_executions_started ON task_executions(started_at DESC);
+
+-- Table Executions (per-table progress)
+CREATE TABLE table_executions (
+    id SERIAL PRIMARY KEY,
+    task_id INTEGER REFERENCES tasks(id) ON DELETE CASCADE,
+    task_execution_id INTEGER REFERENCES task_executions(id) ON DELETE CASCADE,
+    table_name VARCHAR(255) NOT NULL,
+    status VARCHAR(20) NOT NULL,
+    total_rows BIGINT DEFAULT 0,
+    processed_rows BIGINT DEFAULT 0,
+    failed_rows BIGINT DEFAULT 0,
+    progress_percent FLOAT DEFAULT 0,
+    retry_count INTEGER DEFAULT 0,
+    started_at TIMESTAMP,
+    completed_at TIMESTAMP,
+    error_message TEXT
+);
+
+CREATE INDEX idx_table_executions_task ON table_executions(task_id);
+CREATE INDEX idx_table_executions_status ON table_executions(status);
+
+-- Global Variables (dynamic path templates)
+CREATE TABLE global_variables (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(255) UNIQUE NOT NULL,
+    description TEXT,
+    variable_type VARCHAR(20) NOT NULL,
+    config JSONB NOT NULL,
+    is_active BOOLEAN DEFAULT true,
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+    updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE INDEX idx_variables_active ON global_variables(is_active);
 ```
 
-### 6. Connector Layer
+**Connection Pooling:**
+```python
+# SQLAlchemy engine config
+engine = create_engine(
+    DATABASE_URL,
+    pool_size=20,
+    max_overflow=10,
+    pool_pre_ping=True,
+    pool_recycle=3600
+)
+```
 
-**Base Classes:**
-- `BaseConnector` - Abstract base
-- `SourceConnector` - Source operations
-- `DestinationConnector` - Destination operations
+### 5. Connector Layer
 
-**Implementations:**
+**Architecture:**
+```python
+# Base connector interface
+class BaseConnector:
+    def connect(self) -> None
+    def disconnect(self) -> None
+    def test_connection(self) -> dict
 
-**SQL Server Source:**
-- Connection management
-- Table discovery
-- Schema extraction
-- Full load reading (with batching)
-- CDC enablement
-- CDC change tracking
-- LSN management
+class SourceConnector(BaseConnector):
+    def list_tables(self) -> List[dict]
+    def get_table_schema(self, table_name: str) -> List[dict]
+    def read_data(self, table_name: str, batch_size: int) -> pd.DataFrame
+    
+class DestinationConnector(BaseConnector):
+    def create_table(self, table_name: str, schema: List[dict]) -> None
+    def write_data(self, table_name: str, data: pd.DataFrame) -> None
+```
 
-**Snowflake Destination:**
+**Implemented Connectors:**
+
+**SQL Server (Source):**
+- Bulk read with batching
+- CDC support (Change Data Capture)
+- LSN tracking for incremental sync
+- Connection pooling
+- Retry logic for transient failures
+
+**Snowflake (Destination):**
 - Bulk load via staging
 - PUT/COPY commands
-- Schema mapping
-- Table creation
-- Schema drift handling
+- Schema evolution support
+- Warehouse auto-suspend
+- Query result caching
 
-**S3 Destination:**
+**AWS S3 (Destination):**
 - Multiple format support (Parquet, CSV, JSON)
 - Partitioned writes
+- Server-side encryption
+- Multipart upload for large files
 - Metadata management
-- Overwrite/Append modes
 
-## Data Flow
-
-### Full Load Transfer
+## Data Flow - Full Load
 
 ```
-1. User creates task with source/dest connectors
-2. User clicks "Start" on task
-3. API sends task to Celery queue
-4. Celery worker picks up task
-5. Worker:
-   a. Connects to source
-   b. Gets table schema
-   c. Creates destination table
-   d. Reads data in batches
-   e. Applies transformations
-   f. Writes to destination
-   g. Updates progress
-   h. Broadcasts progress via WebSocket
-6. Frontend updates progress bar in real-time
-7. Execution completes, metrics saved
+┌──────────────────────────────────────────────────────────────┐
+│                   Full Load Execution Flow                    │
+└──────────────────────────────────────────────────────────────┘
+
+User initiates task
+        │
+        ▼
+API creates Celery task
+        │
+        ▼
+Worker picks up task ─────────┐
+        │                     │
+        ▼                     │ (Parallel processing)
+For each table: ──────────────┤
+        │                     │
+        ▼                     │
+1. Connect to source          │
+2. Get table schema           │
+3. Create destination table   │
+4. Read data in batches ──────┤ (Batches processed in parallel)
+5. Apply transformations      │
+6. Write to destination       │
+7. Update progress ──────────→ WebSocket broadcast
+8. Commit to DB               │
+        │                     │
+        ▼                     │
+All tables complete ←─────────┘
+        │
+        ▼
+Mark task complete
+Broadcast final status
 ```
 
-### CDC Transfer
+## Data Flow - CDC
 
 ```
-1. User creates task with CDC mode
-2. System enables CDC on source tables
-3. Task starts CDC polling
-4. Every N seconds:
-   a. Worker queries CDC changes since last LSN
-   b. Reads change records
-   c. Applies transformations
-   d. Writes changes to destination
-   e. Updates last LSN
-   f. Saves metrics
-5. Process repeats continuously or at intervals
-6. Dashboard shows real-time sync status
+┌──────────────────────────────────────────────────────────────┐
+│                   CDC Synchronization Flow                    │
+└──────────────────────────────────────────────────────────────┘
+
+Scheduled CDC poll (every N seconds)
+        │
+        ▼
+Get last LSN from database
+        │
+        ▼
+Query CDC tables for changes since LSN
+        │
+        ▼
+Group changes by table
+        │
+        ▼
+For each table with changes:
+        │
+        ├─→ Get change records
+        ├─→ Apply transformations
+        ├─→ Write to destination
+        └─→ Update last LSN
+        │
+        ▼
+Broadcast progress
+        │
+        ▼
+Schedule next poll
 ```
 
-## Transformation Pipeline
-
-```
-Data Flow:
-Source → Read Batch → Transform → Write → Destination
-
-Transformation Types:
-1. add_column - Add computed/constant columns
-2. rename_column - Rename fields
-3. drop_column - Remove fields
-4. cast_type - Convert data types
-5. filter_rows - Filter records
-6. replace_value - Value substitution
-7. concatenate_columns - Merge columns
-8. split_column - Split into multiple
-9. apply_function - Custom functions
-```
-
-## Scaling Considerations
+## Scaling Strategy
 
 ### Horizontal Scaling
 
-**API Servers:**
-- Deploy multiple FastAPI instances behind load balancer
-- Share database connection pool
+**API Layer:**
+- Deploy 3+ instances behind load balancer
 - Use sticky sessions for WebSocket
+- Stateless design (no local state)
+- Shared database for coordination
 
 **Celery Workers:**
-- Deploy multiple worker instances
-- Distribute tasks across workers
-- Use Redis Sentinel for HA
+- Auto-scaling based on queue depth
+- Min: 2 workers, Max: 20 workers
+- Scale up: Queue > 10 tasks for 5 minutes
+- Scale down: Queue < 2 tasks for 10 minutes
 
 **Database:**
-- Migrate to PostgreSQL for production
-- Use read replicas for reporting
-- Partition large tables
+- Primary for writes
+- 2+ read replicas for queries
+- Connection pooling (20 connections/instance)
+- Query result caching
+
+**Redis:**
+- Redis Cluster (6 nodes: 3 primary + 3 replicas)
+- Sentinel for automatic failover
+- Read from replicas for non-critical operations
 
 ### Vertical Scaling
 
-**Memory:**
-- Adjust batch sizes based on available memory
-- Monitor worker memory usage
-- Use memory-efficient data structures (Pandas)
+**Memory Requirements:**
+- API: 1GB per instance (baseline)
+- Worker: 2-4GB per worker (depends on batch size)
+- Redis: 4-8GB (depends on queue size)
+- PostgreSQL: 8-16GB (depends on data volume)
 
-**CPU:**
-- Increase worker concurrency
-- Use multiprocessing for parallel transfers
-- Optimize transformation logic
+**CPU Requirements:**
+- API: 2 cores per instance
+- Worker: 4 cores per worker (parallel processing)
+- Redis: 2 cores
+- PostgreSQL: 4-8 cores
 
-**Network:**
-- Use compression for data transfer
-- Batch network operations
+## Performance Optimization
+
+### Database Optimization
+
+**Indexes:**
+```sql
+-- Frequently queried fields
+CREATE INDEX CONCURRENTLY idx_tasks_status_active 
+ON tasks(status, is_active) WHERE is_active = true;
+
+CREATE INDEX CONCURRENTLY idx_executions_recent 
+ON task_executions(task_id, started_at DESC);
+
+-- Partial indexes for active tasks
+CREATE INDEX CONCURRENTLY idx_running_tasks 
+ON tasks(id) WHERE status = 'running';
+```
+
+**Query Optimization:**
+- Use EXPLAIN ANALYZE for slow queries
+- Add appropriate indexes
 - Use connection pooling
+- Enable query result caching
 
-## Security Architecture
+### Data Transfer Optimization
 
-### Current Implementation
+**Batch Size Tuning:**
+- Small tables (< 100K rows): 10,000 rows/batch
+- Medium tables (100K-1M rows): 50,000 rows/batch
+- Large tables (> 1M rows): 100,000 rows/batch
+- Adjust based on memory and network
 
-- No authentication (development only)
-- Credentials stored in database (encrypted recommended)
-- CORS enabled for localhost
+**Parallel Processing:**
+- Process 3-5 tables concurrently (default)
+- Adjust based on worker CPU/memory
+- Monitor resource utilization
 
-### Production Recommendations
-
-1. **Authentication & Authorization:**
-   - JWT tokens
-   - OAuth 2.0
-   - Role-based access control (RBAC)
-
-2. **Data Security:**
-   - Encrypt credentials at rest
-   - Use secrets management (Vault, AWS Secrets Manager)
-   - SSL/TLS for all connections
-
-3. **Network Security:**
-   - VPC/Private subnets
-   - Security groups
-   - API rate limiting
-
-4. **Audit & Compliance:**
-   - Audit logging
-   - Data lineage tracking
-   - Compliance reporting
+**Network Optimization:**
+- Enable compression for data transfer
+- Use connection pooling
+- Batch API calls
+- Minimize network round trips
 
 ## Monitoring & Observability
 
-### Metrics
+### Application Metrics
 
-- Task execution count
-- Success/failure rates
-- Data throughput (rows/sec, MB/sec)
-- Latency metrics
-- Queue depth
-- Worker utilization
+**Key Metrics:**
+```
+# Task metrics
+dtaas_tasks_total{status="completed|failed"}
+dtaas_task_duration_seconds{task_name}
+dtaas_task_rows_processed{task_name}
+
+# API metrics
+dtaas_api_requests_total{endpoint, method, status}
+dtaas_api_request_duration_seconds{endpoint}
+
+# Worker metrics
+dtaas_celery_queue_length
+dtaas_celery_active_workers
+dtaas_celery_task_failures_total
+
+# Database metrics
+dtaas_db_connections_active
+dtaas_db_query_duration_seconds
+```
 
 ### Logging
 
-- Application logs (structured JSON)
-- Access logs
-- Error logs with stack traces
-- Audit logs
+**Structured Logging (JSON):**
+```json
+{
+  "timestamp": "2025-10-24T10:30:15Z",
+  "level": "INFO",
+  "module": "transfer_service",
+  "task_id": 123,
+  "table_name": "dbo.Orders",
+  "message": "Processing batch 5/10",
+  "rows_processed": 50000,
+  "progress_percent": 50.0
+}
+```
+
+**Log Aggregation:**
+- ELK Stack (Elasticsearch, Logstash, Kibana)
+- Or Datadog / Splunk
+- Retention: 30 days for INFO, 90 days for ERROR
 
 ### Alerting
 
-- Failed executions
-- High error rates
-- Queue backlog
-- Resource exhaustion
-- Connection failures
+**Critical Alerts:**
+- Task failure rate > 10%
+- API error rate > 5%
+- Queue depth > 100 tasks
+- Worker count = 0
+- Database connection pool exhausted
+- Redis memory > 90%
 
-## Future Enhancements
+**Warning Alerts:**
+- Task duration > 2x average
+- Slow database queries > 1s
+- High memory usage > 80%
+- Disk space < 20%
 
-1. **Additional Connectors:**
-   - MySQL, PostgreSQL, Oracle
-   - Azure Blob, Google Cloud Storage
-   - MongoDB, Cassandra
+## Security Architecture
 
-2. **Advanced Features:**
-   - Data quality checks
-   - Schema versioning
-   - Incremental updates
-   - Deduplication
-   - Complex transformations (joins, aggregations)
+### Authentication & Authorization
 
-3. **Operations:**
-   - Blue-green deployments
-   - Canary releases
-   - Automatic failover
-   - Disaster recovery
+**JWT-based Authentication:**
+```python
+# Token structure
+{
+  "sub": "user@example.com",
+  "role": "admin|operator|viewer",
+  "exp": 1698156800,
+  "iat": 1698153200
+}
 
-4. **User Experience:**
-   - Workflow templates
-   - Scheduling calendar
-   - Email notifications
-   - Mobile app
-
-## Deployment Architecture
-
-### Development
-
-```
-localhost:
-  - Frontend (Vite dev server): 5173
-  - Backend (Uvicorn): 8000
-  - Redis: 6379
-  - SQLite: ./dtaas.db
+# Role permissions
+Admin: Full access
+Operator: Create/edit/run tasks, view all
+Viewer: Read-only access
 ```
 
-### Production
+### Data Security
 
+**Encryption:**
+- At rest: Database encryption, S3 server-side encryption
+- In transit: TLS 1.3 for all connections
+- Credentials: Encrypted in database, env variables
+
+**Network Security:**
+- VPC with private subnets
+- Security groups (least privilege)
+- No public database access
+- API behind WAF
+
+**Secrets Management:**
+- AWS Secrets Manager or HashiCorp Vault
+- Rotate credentials every 90 days
+- No hardcoded secrets
+- Environment-based configuration
+
+### Audit Logging
+
+```sql
+CREATE TABLE audit_logs (
+    id SERIAL PRIMARY KEY,
+    user_id INTEGER,
+    action VARCHAR(50) NOT NULL,
+    resource_type VARCHAR(50),
+    resource_id INTEGER,
+    changes JSONB,
+    ip_address VARCHAR(45),
+    created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+-- Actions: CREATE, UPDATE, DELETE, START, STOP, PAUSE
 ```
-Load Balancer
-    │
-    ├─ Frontend (Nginx) → Static Files + CDN
-    │
-    ├─ API Gateway
-    │   ├─ Backend API (Multiple instances)
-    │   └─ WebSocket Server
-    │
-    ├─ Celery Workers (Auto-scaling group)
-    │
-    ├─ Redis Cluster (HA)
-    │
-    └─ PostgreSQL (RDS/Managed)
-```
 
-## Performance Benchmarks
+## Disaster Recovery
 
-Typical performance (single worker, default settings):
+### Backup Strategy
 
-- **Full Load**: 10,000-50,000 rows/second
-- **CDC**: 1,000-10,000 changes/second
-- **Latency**: < 100ms for API calls
-- **WebSocket Latency**: < 50ms
+**Database Backups:**
+- Automated daily full backups
+- Point-in-time recovery (PITR)
+- Retention: 30 days
+- Test restore monthly
 
-Performance varies based on:
-- Network bandwidth
-- Source/destination performance
-- Data complexity
-- Transformation overhead
-- Batch sizes
+**Redis Backups:**
+- AOF persistence
+- Daily RDB snapshots
+- Retention: 7 days
 
-## Conclusion
+**Application Code:**
+- Version controlled in Git
+- Tagged releases
+- Artifact storage (Docker registry)
 
-DTaaS is designed as a scalable, extensible data transfer platform with support for both batch and real-time synchronization. The architecture separates concerns clearly, allowing for independent scaling and development of each layer.
+### Recovery Procedures
 
+**RTO (Recovery Time Objective): 2 hours**
+**RPO (Recovery Point Objective): 15 minutes**
+
+**Recovery Steps:**
+1. Restore database from backup (30 min)
+2. Deploy application containers (15 min)
+3. Restore Redis state (15 min)
+4. Verify all services (30 min)
+5. Resume tasks (30 min)
+
+## Cost Optimization
+
+### Resource Optimization
+
+**Compute:**
+- Use spot instances for non-critical workers
+- Auto-scaling based on demand
+- Rightsize instances (monitor utilization)
+
+**Storage:**
+- S3 Intelligent-Tiering
+- Compress historical data
+- Archive old task executions
+
+**Database:**
+- Use read replicas for reporting
+- Enable query result caching
+- Use reserved instances for production
+
+### Monitoring Costs
+
+**Cost Metrics:**
+- API calls per day
+- Data transferred (GB)
+- Worker hours
+- Database storage
+- S3 storage and requests
+
+**Cost Optimization Tips:**
+- Batch small transfers
+- Schedule large transfers during off-peak hours
+- Clean up old data
+- Monitor and optimize slow queries
+
+## Production Checklist
+
+### Pre-Deployment
+- [ ] All tests passing
+- [ ] Security audit completed
+- [ ] Performance testing done
+- [ ] Monitoring configured
+- [ ] Backup strategy implemented
+- [ ] DR plan documented
+- [ ] Runbooks created
+
+### Deployment
+- [ ] Blue-green deployment
+- [ ] Database migrations tested
+- [ ] Health checks verified
+- [ ] Load testing completed
+- [ ] Rollback plan ready
+
+### Post-Deployment
+- [ ] Monitor metrics for 24 hours
+- [ ] Verify all integrations
+- [ ] Test critical flows
+- [ ] Document any issues
+- [ ] Update runbooks
+
+---
+
+For deployment instructions, see [DEPLOYMENT.md](./DEPLOYMENT.md)
+
+For production readiness checklist, see [PRODUCTION_READY.md](./PRODUCTION_READY.md)

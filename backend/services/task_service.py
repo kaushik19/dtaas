@@ -12,6 +12,62 @@ class TaskService:
     """Service for managing tasks"""
     
     @staticmethod
+    def _filter_current_tables(task: models.Task, table_executions: list) -> list:
+        """
+        Filter table executions to only include tables currently configured in the task.
+        This prevents showing progress for tables that were removed from the task.
+        """
+        if not table_executions:
+            return []
+        
+        # Get current table names from task configuration and normalize them
+        # Remove schema prefix if present (e.g., "dbo.TableName" -> "TableName")
+        current_tables = set()
+        current_tables_with_schema = set()
+        
+        for table in (task.source_tables or []):
+            current_tables_with_schema.add(table)
+            # Store both with and without schema prefix
+            if '.' in table:
+                base_name = table.split('.', 1)[1]  # Get part after first dot
+                current_tables.add(base_name)
+            current_tables.add(table)
+        
+        # Filter table executions
+        filtered_executions = []
+        for table_exec in table_executions:
+            table_name = table_exec.table_name
+            
+            # Check if table is in current configuration (with or without schema)
+            is_configured = table_name in current_tables
+            
+            # Also check with schema prefix added if not already present
+            if not is_configured and '.' not in table_name:
+                # Try common schema prefixes
+                for schema_table in current_tables_with_schema:
+                    if schema_table.endswith('.' + table_name):
+                        is_configured = True
+                        break
+            
+            if is_configured:
+                # If table_configs exists, check if table is enabled
+                if task.table_configs:
+                    # Try to find config with or without schema prefix
+                    table_config = None
+                    for config_key in task.table_configs.keys():
+                        if config_key == table_name or config_key.endswith('.' + table_name):
+                            table_config = task.table_configs[config_key]
+                            break
+                    
+                    if table_config and not table_config.get('enabled', True):
+                        # Skip disabled tables
+                        continue
+                
+                filtered_executions.append(table_exec)
+        
+        return filtered_executions
+    
+    @staticmethod
     def create_task(db: Session, task: schemas.TaskCreate) -> models.Task:
         """Create a new task"""
         db_task = models.Task(
@@ -69,6 +125,26 @@ class TaskService:
         # Handle transformations separately
         if 'transformations' in update_data and update_data['transformations']:
             update_data['transformations'] = [t.model_dump() for t in update_data['transformations']]
+        
+        # Clean up CDC state for removed tables
+        if 'source_tables' in update_data:
+            old_tables = set(db_task.source_tables or [])
+            new_tables = set(update_data['source_tables'] or [])
+            removed_tables = old_tables - new_tables
+            
+            if removed_tables and db_task.cdc_enabled_tables:
+                # Remove CDC state for tables no longer in the task
+                cdc_state = db_task.cdc_enabled_tables.copy()
+                for table in removed_tables:
+                    # Remove the table's CDC enabled flag
+                    cdc_state.pop(table, None)
+                    # Remove the table's last LSN (with and without schema prefix)
+                    base_name = table.split('.')[-1] if '.' in table else table
+                    cdc_state.pop(f"{base_name}_last_lsn", None)
+                    cdc_state.pop(f"{table}_last_lsn", None)
+                
+                db_task.cdc_enabled_tables = cdc_state
+                logger.info(f"Cleaned up CDC state for removed tables: {removed_tables}")
         
         for field, value in update_data.items():
             setattr(db_task, field, value)
@@ -181,4 +257,53 @@ class TaskService:
         return db.query(models.TaskExecution).order_by(
             models.TaskExecution.created_at.desc()
         ).limit(limit).all()
+    
+    @staticmethod
+    def get_task_detail(db: Session, task_id: int) -> dict:
+        """Get detailed task info with table-wise progress"""
+        task = TaskService.get_task(db, task_id)
+        if not task:
+            return None
+        
+        # Get latest execution
+        latest_execution = db.query(models.TaskExecution).filter(
+            models.TaskExecution.task_id == task_id
+        ).order_by(models.TaskExecution.created_at.desc()).first()
+        
+        # Get full load table progress (from latest full_load or full_load_then_cdc execution)
+        full_load_execution = db.query(models.TaskExecution).filter(
+            models.TaskExecution.task_id == task_id,
+            models.TaskExecution.execution_type.in_(["full_load", "full_load_then_cdc"])
+        ).order_by(models.TaskExecution.created_at.desc()).first()
+        
+        full_load_progress = []
+        if full_load_execution:
+            all_full_load_progress = db.query(models.TableExecution).filter(
+                models.TableExecution.task_execution_id == full_load_execution.id
+            ).all()
+            
+            # Filter to only show tables that are currently in the task configuration
+            full_load_progress = TaskService._filter_current_tables(task, all_full_load_progress)
+        
+        # Get CDC table progress (from latest cdc_sync execution)
+        cdc_execution = db.query(models.TaskExecution).filter(
+            models.TaskExecution.task_id == task_id,
+            models.TaskExecution.execution_type == "cdc_sync"
+        ).order_by(models.TaskExecution.created_at.desc()).first()
+        
+        cdc_progress = []
+        if cdc_execution:
+            all_cdc_progress = db.query(models.TableExecution).filter(
+                models.TableExecution.task_execution_id == cdc_execution.id
+            ).all()
+            
+            # Filter to only show tables that are currently in the task configuration
+            cdc_progress = TaskService._filter_current_tables(task, all_cdc_progress)
+        
+        return {
+            "task": task,
+            "full_load_progress": full_load_progress,
+            "cdc_progress": cdc_progress,
+            "latest_execution": latest_execution
+        }
 

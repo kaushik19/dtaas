@@ -118,6 +118,32 @@ class ConnectorService:
             )
     
     @staticmethod
+    def test_connector_config(connector_data: schemas.ConnectorCreate) -> schemas.ConnectorTestResponse:
+        """Test connector configuration without saving to database"""
+        try:
+            # Create a temporary connector object for testing
+            temp_connector = models.Connector(
+                name=connector_data.name,
+                connector_type=connector_data.connector_type,
+                source_type=connector_data.source_type,
+                destination_type=connector_data.destination_type,
+                connection_config=connector_data.connection_config
+            )
+            
+            # Get connector instance and test
+            connector_instance = ConnectorService._get_connector_instance(temp_connector)
+            result = connector_instance.test_connection()
+            
+            return schemas.ConnectorTestResponse(**result)
+        except Exception as e:
+            logger.error(f"Error testing connector config: {str(e)}")
+            return schemas.ConnectorTestResponse(
+                success=False,
+                message=f"Test failed: {str(e)}",
+                details={"error_type": type(e).__name__}
+            )
+    
+    @staticmethod
     def list_tables(db: Session, connector_id: int) -> List[schemas.TableInfo]:
         """List tables from source connector"""
         db_connector = ConnectorService.get_connector(db, connector_id)
@@ -131,15 +157,14 @@ class ConnectorService:
             tables = connector.list_tables()
             result = []
             
+            # Use the data already returned by list_tables() to avoid hundreds of additional queries
             for table in tables:
                 schema_name = table.get('schema_name', 'dbo')
                 table_name = table.get('table_name')
                 
-                # Get column info
-                columns = connector.get_table_schema(table_name, schema_name)
-                
-                # Check CDC status
-                cdc_enabled = connector.is_cdc_enabled(table_name, schema_name)
+                # Use columns and cdc_enabled from the table dict (already populated by sql_server.py)
+                columns = table.get('columns', [])
+                cdc_enabled = table.get('cdc_enabled', False)
                 
                 result.append(schemas.TableInfo(
                     schema_name=schema_name,
@@ -154,6 +179,49 @@ class ConnectorService:
         except Exception as e:
             logger.error(f"Error listing tables: {str(e)}")
             raise
+    
+    @staticmethod
+    def get_table_columns(db: Session, connector_id: int, table_name: str, schema: str = "dbo") -> List[str]:
+        """Get column names for a specific table from a source connector"""
+        db_connector = ConnectorService.get_connector(db, connector_id)
+        if not db_connector or db_connector.connector_type != "source":
+            raise ValueError("Connector not found or is not a source connector")
+        
+        try:
+            connector = ConnectorService._get_connector_instance(db_connector)
+            connector.connect()
+            
+            # Get table schema (which includes column info)
+            schema_info = connector.get_table_schema(table_name=table_name, schema=schema)
+            
+            # Extract just column names
+            columns = [col['column_name'] for col in schema_info]
+            
+            connector.disconnect()
+            logger.info(f"Retrieved {len(columns)} columns for table {schema}.{table_name}")
+            return columns
+        except Exception as e:
+            logger.error(f"Error getting columns for table {table_name}: {str(e)}")
+            raise
+    
+    @staticmethod
+    def _get_connector_class(connector_type_str: str):
+        """Get connector class based on type string"""
+        if connector_type_str == "sql_server":
+            return SQLServerConnector
+        elif connector_type_str == "snowflake":
+            return SnowflakeConnector
+        elif connector_type_str == "s3":
+            return S3Connector
+        else:
+            raise ValueError(f"Unknown connector type: {connector_type_str}")
+    
+    @staticmethod
+    def _get_connector_instance_from_config(config: dict):
+        """Create connector instance from configuration dict (for parallel processing)"""
+        connector_type = config.get('source_type') or config.get('destination_type')
+        connector_class = ConnectorService._get_connector_class(connector_type)
+        return connector_class(config.get('connection_config', {}))
     
     @staticmethod
     def _get_connector_instance(db_connector: models.Connector):

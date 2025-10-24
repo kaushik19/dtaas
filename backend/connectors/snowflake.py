@@ -67,7 +67,12 @@ class SnowflakeConnector(DestinationConnector):
             return {
                 "success": False,
                 "message": f"Connection failed: {str(e)}",
-                "details": None
+                "details": {
+                    "error_type": type(e).__name__,
+                    "account": self.account,
+                    "database": self.database,
+                    "warehouse": self.warehouse
+                }
             }
     
     def write_data(
@@ -158,7 +163,10 @@ class SnowflakeConnector(DestinationConnector):
         self,
         table_name: str,
         columns: List[Dict[str, Any]],
-        schema: Optional[str] = None
+        schema: Optional[str] = None,
+        source_connector=None,
+        database_name: str = "",
+        db_session=None
     ) -> bool:
         """Create table if it doesn't exist"""
         target_schema = schema or self.schema

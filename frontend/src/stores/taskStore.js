@@ -36,6 +36,20 @@ export const useTaskStore = defineStore('task', () => {
     }
   }
 
+  const getTask = async (id) => {
+    loading.value = true
+    error.value = null
+    try {
+      const response = await tasksAPI.get(id)
+      return response.data
+    } catch (e) {
+      error.value = e.response?.data?.detail || e.message
+      throw e
+    } finally {
+      loading.value = false
+    }
+  }
+
   const updateTask = async (id, data) => {
     loading.value = true
     error.value = null
@@ -116,6 +130,7 @@ export const useTaskStore = defineStore('task', () => {
     runningTasksCount,
     fetchTasks,
     createTask,
+    getTask,
     updateTask,
     deleteTask,
     controlTask,

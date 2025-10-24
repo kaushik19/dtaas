@@ -1,0 +1,151 @@
+version: '3.8'
+
+services:
+  # Redis - Message broker for Celery
+  redis:
+    image: redis:7-alpine
+    container_name: dtaas-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --appendonly yes
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    networks:
+      - dtaas-network
+
+  # LocalStack - Local AWS services (S3)
+  localstack:
+    image: localstack/localstack:latest
+    container_name: dtaas-localstack
+    ports:
+      - "4566:4566"  # LocalStack gateway
+    environment:
+      - SERVICES=s3
+      - DEBUG=0
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - SKIP_INFRA_DOWNLOADS=1
+      - SKIP_SSL_CERT_DOWNLOAD=1
+    volumes:
+      - localstack-data:/var/lib/localstack
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:4566/_localstack/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+    restart: unless-stopped
+    networks:
+      - dtaas-network
+
+  # Backend API - FastAPI application
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dtaas-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=sqlite:////app/data/dtaas.db
+      - REDIS_URL=redis://redis:6379/0
+      - API_HOST=0.0.0.0
+      - API_PORT=8000
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app
+      - backend-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      localstack:
+        condition: service_healthy
+    command: python main.py
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 3s
+      retries: 3
+      start_period: 30s
+    restart: unless-stopped
+    networks:
+      - dtaas-network
+
+  # Celery Worker - Background task processing
+  celery-worker:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: dtaas-celery
+    environment:
+      - DATABASE_URL=sqlite:////app/data/dtaas.db
+      - REDIS_URL=redis://redis:6379/0
+      - LOG_LEVEL=INFO
+    volumes:
+      - ./backend:/app
+      - backend-data:/app/data
+    depends_on:
+      redis:
+        condition: service_healthy
+      backend:
+        condition: service_healthy
+    command: celery -A celery_app worker --loglevel=info --pool=solo
+    restart: unless-stopped
+    networks:
+      - dtaas-network
+
+  # Frontend - Vue 3 application
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: dtaas-frontend
+    ports:
+      - "5173:5173"
+    volumes:
+      - ./frontend:/app
+      - /app/node_modules
+    depends_on:
+      backend:
+        condition: service_healthy
+    command: npm run dev -- --host 0.0.0.0
+    restart: unless-stopped
+    networks:
+      - dtaas-network
+
+  # PostgreSQL - Optional: Use instead of SQLite for production-like setup
+  # Uncomment if you want to use PostgreSQL locally
+  # postgres:
+  #   image: postgres:15-alpine
+  #   container_name: dtaas-postgres
+  #   environment:
+  #     POSTGRES_DB: dtaas
+  #     POSTGRES_USER: dtaas
+  #     POSTGRES_PASSWORD: dtaas_password
+  #   ports:
+  #     - "5432:5432"
+  #   volumes:
+  #     - postgres-data:/var/lib/postgresql/data
+  #   healthcheck:
+  #     test: ["CMD-SHELL", "pg_isready -U dtaas"]
+  #     interval: 10s
+  #     timeout: 3s
+  #     retries: 3
+  #   networks:
+  #     - dtaas-network
+
+volumes:
+  redis-data:
+  localstack-data:
+  backend-data:
+  # postgres-data:
+
+networks:
+  dtaas-network:
+    driver: bridge
+

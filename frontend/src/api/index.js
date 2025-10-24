@@ -1,4 +1,5 @@
 import axios from 'axios'
+import { useLoadingStore } from '@/stores/loadingStore'
 
 const apiClient = axios.create({
   baseURL: '/api',
@@ -6,6 +7,34 @@ const apiClient = axios.create({
     'Content-Type': 'application/json'
   }
 })
+
+// Request interceptor - show loading
+apiClient.interceptors.request.use(
+  (config) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.startLoading()
+    return config
+  },
+  (error) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.stopLoading()
+    return Promise.reject(error)
+  }
+)
+
+// Response interceptor - hide loading
+apiClient.interceptors.response.use(
+  (response) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.stopLoading()
+    return response
+  },
+  (error) => {
+    const loadingStore = useLoadingStore()
+    loadingStore.stopLoading()
+    return Promise.reject(error)
+  }
+)
 
 // Connectors API
 export const connectorsAPI = {
@@ -26,6 +55,9 @@ export const connectorsAPI = {
   },
   test(id) {
     return apiClient.post(`/connectors/${id}/test`)
+  },
+  testConfig(data) {
+    return apiClient.post('/connectors/test-config', data)
   },
   listTables(id) {
     return apiClient.get(`/connectors/${id}/tables`)

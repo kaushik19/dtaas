@@ -16,7 +16,6 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
     ws.value.onopen = () => {
       connected.value = true
-      console.log('WebSocket connected')
     }
 
     ws.value.onmessage = (event) => {
@@ -37,7 +36,6 @@ export const useWebSocketStore = defineStore('websocket', () => {
 
     ws.value.onclose = () => {
       connected.value = false
-      console.log('WebSocket disconnected')
       
       // Reconnect after 3 seconds
       setTimeout(() => {

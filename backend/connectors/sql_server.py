@@ -1,6 +1,8 @@
 import pyodbc
 import pandas as pd
 from typing import List, Dict, Any, Optional
+from sqlalchemy import create_engine
+from urllib.parse import quote_plus
 from .base import SourceConnector
 import logging
 
@@ -12,13 +14,15 @@ class SQLServerConnector(SourceConnector):
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.driver = config.get("driver", "{ODBC Driver 17 for SQL Server}")
+        self.driver = config.get("driver", "{ODBC Driver 18 for SQL Server}")
         self.server = config.get("server")
         self.database = config.get("database")
         self.username = config.get("username")
         self.password = config.get("password")
         self.port = config.get("port", 1433)
         self.trusted_connection = config.get("trusted_connection", False)
+        self.trust_server_certificate = config.get("trust_server_certificate", True)
+        self.sqlalchemy_engine = None
     
     def connect(self):
         """Establish connection to SQL Server"""
@@ -29,6 +33,9 @@ class SQLServerConnector(SourceConnector):
                     f"SERVER={self.server},{self.port};"
                     f"DATABASE={self.database};"
                     f"Trusted_Connection=yes;"
+                    f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
+                    f"Connection Timeout=60;"
+                    f"Login Timeout=60;"
                 )
             else:
                 conn_str = (
@@ -37,9 +44,45 @@ class SQLServerConnector(SourceConnector):
                     f"DATABASE={self.database};"
                     f"UID={self.username};"
                     f"PWD={self.password};"
+                    f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
+                    f"Connection Timeout=60;"
+                    f"Login Timeout=60;"
                 )
+
+            self.connection = pyodbc.connect(conn_str, timeout=60)
             
-            self.connection = pyodbc.connect(conn_str)
+            # Create SQLAlchemy engine for pandas (to avoid warnings)
+            try:
+                if self.trusted_connection:
+                    sqlalchemy_conn_str = (
+                        f"mssql+pyodbc://@{self.server}:{self.port}/{self.database}"
+                        f"?driver={self.driver.replace('{', '').replace('}', '')}"
+                        f"&Trusted_Connection=yes"
+                        f"&TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'}"
+                    )
+                else:
+                    params = quote_plus(conn_str)
+                    sqlalchemy_conn_str = f"mssql+pyodbc:///?odbc_connect={params}"
+                
+                self.sqlalchemy_engine = create_engine(
+                    sqlalchemy_conn_str, 
+                    echo=False,
+                    pool_pre_ping=True,
+                    pool_recycle=3600,
+                    pool_size=5,  # Keep 5 connections in pool
+                    max_overflow=10,  # Allow up to 10 overflow connections
+                    pool_timeout=60,  # Wait 60 seconds for connection from pool
+                    connect_args={
+                        'timeout': 60,  # Connection timeout in seconds
+                        'connect_timeout': 60,
+                        'login_timeout': 60
+                    }
+                )
+                logger.info(f"SQLAlchemy engine created successfully with connection pooling")
+            except Exception as e:
+                logger.warning(f"Failed to create SQLAlchemy engine: {str(e)}, will use pyodbc connection")
+                self.sqlalchemy_engine = None
+            
             logger.info(f"Connected to SQL Server: {self.server}/{self.database}")
             return self.connection
         except Exception as e:
@@ -70,19 +113,28 @@ class SQLServerConnector(SourceConnector):
             return {
                 "success": False,
                 "message": f"Connection failed: {str(e)}",
-                "details": None
+                "details": {
+                    "error_type": type(e).__name__,
+                    "server": self.server,
+                    "database": self.database,
+                    "port": self.port
+                }
             }
     
     def list_tables(self, schema: Optional[str] = None) -> List[Dict[str, Any]]:
-        """List all tables in the database"""
-        if not self.connection:
+        """List all tables in the database with columns and CDC status"""
+        if not self.connection or not self.sqlalchemy_engine:
             self.connect()
         
+        logger.info("Starting to list tables...")
+        
+        # Batch query to get tables (simplified to avoid timeout)
         query = """
             SELECT 
                 s.name AS schema_name,
                 t.name AS table_name,
-                p.rows AS row_count
+                SUM(p.rows) AS row_count,
+                CAST(t.is_tracked_by_cdc AS BIT) AS cdc_enabled
             FROM sys.tables t
             INNER JOIN sys.schemas s ON t.schema_id = s.schema_id
             LEFT JOIN sys.partitions p ON t.object_id = p.object_id AND p.index_id IN (0, 1)
@@ -91,14 +143,35 @@ class SQLServerConnector(SourceConnector):
         if schema:
             query += f" WHERE s.name = '{schema}'"
         
-        query += " ORDER BY s.name, t.name"
+        query += """
+            GROUP BY s.name, t.name, t.is_tracked_by_cdc
+            ORDER BY s.name, t.name
+        """
         
-        df = pd.read_sql(query, self.connection)
-        return df.to_dict('records')
+        logger.info("Executing table list query...")
+        
+        # Use SQLAlchemy engine if available, otherwise fall back to pyodbc
+        connection_to_use = self.sqlalchemy_engine if self.sqlalchemy_engine else self.connection
+        df = pd.read_sql(query, connection_to_use)
+        tables = df.to_dict('records')
+        
+        logger.info(f"Found {len(tables)} tables")
+        
+        # Convert to proper types and add empty columns array
+        for table in tables:
+            # Convert cdc_enabled to boolean
+            table['cdc_enabled'] = bool(table.get('cdc_enabled', False))
+            # Convert row_count to int (handle None)
+            table['row_count'] = int(table['row_count']) if table.get('row_count') else 0
+            # Add empty columns array for frontend compatibility
+            table['columns'] = []
+        
+        logger.info(f"Successfully processed all {len(tables)} tables")
+        return tables
     
     def get_table_schema(self, table_name: str, schema: Optional[str] = None) -> List[Dict[str, Any]]:
         """Get column information for a table"""
-        if not self.connection:
+        if not self.connection or not self.sqlalchemy_engine:
             self.connect()
         
         schema = schema or "dbo"
@@ -120,7 +193,9 @@ class SQLServerConnector(SourceConnector):
             ORDER BY c.column_id
         """
         
-        df = pd.read_sql(query, self.connection)
+        # Use SQLAlchemy engine if available, otherwise fall back to pyodbc
+        connection_to_use = self.sqlalchemy_engine if self.sqlalchemy_engine else self.connection
+        df = pd.read_sql(query, connection_to_use)
         return df.to_dict('records')
     
     def get_table_row_count(self, table_name: str, schema: Optional[str] = None) -> int:
@@ -176,7 +251,9 @@ class SQLServerConnector(SourceConnector):
             FETCH NEXT {batch_size} ROWS ONLY
         """
         
-        df = pd.read_sql(query, self.connection)
+        # Use SQLAlchemy engine if available, otherwise fall back to pyodbc
+        connection_to_use = self.sqlalchemy_engine if self.sqlalchemy_engine else self.connection
+        df = pd.read_sql(query, connection_to_use)
         return df
     
     def enable_cdc(self, table_name: str, schema: Optional[str] = None) -> bool:
@@ -261,32 +338,54 @@ class SQLServerConnector(SourceConnector):
         
         capture_instance = result[0]
         
+        # CDC function names may contain spaces and need square brackets
+        # SQL Server creates CDC functions with the capture_instance name as-is
+        cdc_function_name = f"fn_cdc_get_all_changes_{capture_instance}"
+        
         # Get LSN range
+        start_lsn = None
         if from_lsn:
-            start_lsn = from_lsn
+            # Ensure hex string has 0x prefix
+            start_lsn_hex = from_lsn if from_lsn.startswith('0x') else f"0x{from_lsn}"
+            # Convert hex string back to bytes for comparison
+            start_lsn = bytes.fromhex(start_lsn_hex.replace('0x', ''))
         else:
-            cursor.execute("SELECT sys.fn_cdc_get_min_lsn(@capture_instance)", capture_instance)
+            cursor.execute(f"SELECT sys.fn_cdc_get_min_lsn('{capture_instance}')")
             start_lsn = cursor.fetchone()[0]
+            start_lsn_hex = f"0x{start_lsn.hex()}" if start_lsn else None
         
         cursor.execute("SELECT sys.fn_cdc_get_max_lsn()")
         end_lsn = cursor.fetchone()[0]
         
-        if not end_lsn or start_lsn >= end_lsn:
-            # No new changes
-            return pd.DataFrame(), start_lsn.hex() if start_lsn else None
+        if not end_lsn:
+            # No LSN available
+            return pd.DataFrame(), None
         
-        # Read CDC changes
+        end_lsn_hex = f"0x{end_lsn.hex()}"
+        
+        # Check if there are any changes
+        if start_lsn and start_lsn >= end_lsn:
+            # No new changes
+            return pd.DataFrame(), end_lsn_hex
+        
+        # Read CDC changes - use brackets for function names with spaces
+        # Properly escape function name if it contains spaces or special characters
         query = f"""
             SELECT *
-            FROM cdc.fn_cdc_get_all_changes_{capture_instance}(
-                {start_lsn}, 
-                {end_lsn}, 
+            FROM [cdc].[{cdc_function_name}](
+                {start_lsn_hex if start_lsn_hex else end_lsn_hex}, 
+                {end_lsn_hex}, 
                 'all'
             )
             ORDER BY __$start_lsn
         """
         
-        df = pd.read_sql(query, self.connection)
+        logger.info(f"Executing CDC query for {table_name} using function: {cdc_function_name}")
         
-        return df, end_lsn.hex()
+        # Use SQLAlchemy engine if available, otherwise fall back to pyodbc
+        connection_to_use = self.sqlalchemy_engine if self.sqlalchemy_engine else self.connection
+        df = pd.read_sql(query, connection_to_use)
+        
+        # Return end_lsn with 0x prefix for next call
+        return df, end_lsn_hex
 

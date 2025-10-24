@@ -77,7 +77,26 @@ def test_connector(
     """Test connector connection"""
     result = ConnectorService.test_connector(db, connector_id)
     if not result.success:
-        raise HTTPException(status_code=400, detail=result.message)
+        # Include detailed error information in the HTTP exception
+        error_detail = result.message
+        if result.details:
+            error_detail += f" | Details: {result.details}"
+        raise HTTPException(status_code=400, detail=error_detail)
+    return result
+
+
+@router.post("/test-config", response_model=schemas.ConnectorTestResponse)
+def test_connector_config(
+    connector: schemas.ConnectorCreate,
+):
+    """Test connector configuration without saving"""
+    result = ConnectorService.test_connector_config(connector)
+    if not result.success:
+        # Include detailed error information in the HTTP exception
+        error_detail = result.message
+        if result.details:
+            error_detail += f" | Details: {result.details}"
+        raise HTTPException(status_code=400, detail=error_detail)
     return result
 
 
@@ -87,8 +106,36 @@ def list_tables(
     db: Session = Depends(get_db)
 ):
     """List tables from source connector"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
     try:
-        return ConnectorService.list_tables(db, connector_id)
+        logger.info(f"Listing tables for connector {connector_id}")
+        result = ConnectorService.list_tables(db, connector_id)
+        logger.info(f"Successfully listed {len(result)} tables")
+        return result
     except Exception as e:
+        logger.error(f"Error listing tables: {str(e)}", exc_info=True)
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@router.get("/{connector_id}/tables/{table_name}/columns", response_model=List[str])
+def get_table_columns(
+    connector_id: int,
+    table_name: str,
+    schema: str = "dbo",
+    db: Session = Depends(get_db)
+):
+    """Get column names for a specific table from source connector"""
+    import logging
+    logger = logging.getLogger(__name__)
+    
+    try:
+        logger.info(f"Getting columns for table {schema}.{table_name} from connector {connector_id}")
+        columns = ConnectorService.get_table_columns(db, connector_id, table_name, schema)
+        logger.info(f"Successfully retrieved {len(columns)} columns")
+        return columns
+    except Exception as e:
+        logger.error(f"Error getting columns: {str(e)}", exc_info=True)
         raise HTTPException(status_code=400, detail=str(e))
 

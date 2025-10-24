@@ -40,25 +40,16 @@
             </el-form-item>
 
             <el-form-item label="Tables">
-              <el-select 
-                v-model="taskConfig.source_tables" 
-                multiple 
-                placeholder="Select tables"
+              <el-button 
+                @click="openTableSelection"
                 :disabled="!taskConfig.source_connector_id"
-                @visible-change="loadSourceTables"
+                style="width: 100%;"
               >
-                <el-option 
-                  v-for="table in sourceTables" 
-                  :key="`${table.schema_name}.${table.table_name}`"
-                  :label="`${table.schema_name}.${table.table_name}`" 
-                  :value="`${table.schema_name}.${table.table_name}`"
-                >
-                  <span>{{ table.schema_name }}.{{ table.table_name }}</span>
-                  <el-tag v-if="table.cdc_enabled" type="success" size="small" style="margin-left: 8px;">
-                    CDC
-                  </el-tag>
-                </el-option>
-              </el-select>
+                <el-icon><List /></el-icon>
+                {{ taskConfig.source_tables.length > 0 
+                  ? `${taskConfig.source_tables.length} table(s) selected` 
+                  : 'Select Tables' }}
+              </el-button>
             </el-form-item>
 
             <el-form-item label="Destination">
@@ -100,12 +91,57 @@
               <el-input-number v-model="taskConfig.schedule_interval_seconds" :min="10" />
             </el-form-item>
 
-            <el-form-item label="Batch Size (MB)">
-              <el-input-number v-model="taskConfig.batch_size_mb" :min="1" :max="500" />
+            <el-divider content-position="left">Batch Configuration</el-divider>
+
+            <el-form-item label="Batch Mode">
+              <el-radio-group v-model="batchMode">
+                <el-radio label="rows">By Row Count</el-radio>
+                <el-radio label="size">By Data Size (MB)</el-radio>
+              </el-radio-group>
+              <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                Smaller batches = more frequent progress updates but slightly slower
+              </div>
             </el-form-item>
 
-            <el-form-item label="Batch Rows">
-              <el-input-number v-model="taskConfig.batch_rows" :min="100" :max="100000" />
+            <el-form-item 
+              v-if="batchMode === 'rows'" 
+              label="Rows per Batch"
+            >
+              <el-input-number 
+                v-model="taskConfig.batch_rows" 
+                :min="1000" 
+                :max="10000000"
+                :step="10000"
+              />
+              <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                Recommended: 50,000 - 100,000 for real-time progress updates
+              </div>
+            </el-form-item>
+
+            <el-form-item 
+              v-if="batchMode === 'size'" 
+              label="Batch Size (MB)"
+            >
+              <el-input-number 
+                v-model="taskConfig.batch_size_mb" 
+                :min="1" 
+                :max="1000"
+                :step="10"
+              />
+              <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                Maximum data size in memory before writing to destination
+              </div>
+            </el-form-item>
+
+            <el-form-item label="Parallel Tables">
+              <el-input-number 
+                v-model="taskConfig.parallel_tables" 
+                :min="1" 
+                :max="10"
+              />
+              <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+                Number of tables to process simultaneously (1 = sequential)
+              </div>
             </el-form-item>
 
             <el-form-item 
@@ -123,41 +159,35 @@
               <el-switch v-model="taskConfig.handle_schema_drift" />
             </el-form-item>
 
-            <el-divider content-position="left">Transformations</el-divider>
+            <el-divider content-position="left">Retry Configuration</el-divider>
 
-            <div class="transformations-list">
-              <el-card 
-                v-for="(transform, index) in taskConfig.transformations" 
-                :key="index"
-                class="transform-card"
-                shadow="hover"
-              >
-                <div class="transform-header">
-                  <el-tag size="small">{{ transform.type }}</el-tag>
-                  <el-button 
-                    size="small" 
-                    type="danger" 
-                    link
-                    @click="removeTransformation(index)"
-                  >
-                    <el-icon><Delete /></el-icon>
-                  </el-button>
-                </div>
-                <div class="transform-config">
-                  <pre>{{ JSON.stringify(transform.config, null, 2) }}</pre>
-                </div>
-              </el-card>
-            </div>
+            <el-form-item label="Enable Retry">
+              <el-switch v-model="taskConfig.retry_enabled" />
+            </el-form-item>
 
-            <el-button 
-              type="primary" 
-              plain 
-              style="width: 100%; margin-top: 10px;"
-              @click="addTransformationDialogVisible = true"
+            <el-form-item 
+              v-if="taskConfig.retry_enabled" 
+              label="Max Retries"
             >
-              <el-icon><Plus /></el-icon>
-              Add Transformation
-            </el-button>
+              <el-input-number v-model="taskConfig.max_retries" :min="1" :max="10" />
+            </el-form-item>
+
+            <el-form-item 
+              v-if="taskConfig.retry_enabled" 
+              label="Retry Delay (sec)"
+            >
+              <el-input-number v-model="taskConfig.retry_delay_seconds" :min="5" :max="300" />
+            </el-form-item>
+
+            <el-form-item 
+              v-if="taskConfig.retry_enabled" 
+              label="Cleanup on Retry"
+            >
+              <el-switch v-model="taskConfig.cleanup_on_retry" />
+              <div style="font-size: 12px; color: #909399; margin-top: 5px;">
+                Delete partial files before retrying failed table
+              </div>
+            </el-form-item>
 
             <el-divider />
 
@@ -167,7 +197,7 @@
               @click="createTask"
               :loading="creating"
             >
-              Create Task
+              {{ isEditMode ? 'Update Task' : 'Create Task' }}
             </el-button>
           </el-form>
         </el-card>
@@ -196,7 +226,40 @@
       </el-col>
     </el-row>
 
-    <!-- Add Transformation Dialog -->
+    <!-- Selected Tables List - Full Width -->
+    <el-row :gutter="20" style="margin-top: 20px;">
+      <el-col :span="24">
+        <el-card>
+          <SelectedTablesList
+            :tables="taskConfig.source_tables"
+            :table-configs="taskConfig.table_configs || {}"
+            @open-table-selection="openTableSelection"
+            @configure-transform="openTransformDialog"
+            @toggle-table="toggleTable"
+            @remove-table="removeTable"
+          />
+        </el-card>
+      </el-col>
+    </el-row>
+
+    <!-- Per-Table Transform Dialog -->
+    <TableTransformDialog
+      v-model="transformDialogVisible"
+      :table-name="currentTransformTable"
+      :source-connector-id="taskConfig.source_connector_id"
+      :transformations="getCurrentTableTransformations()"
+      @save="saveTableTransformations"
+    />
+
+    <!-- Table Selection Dialog -->
+    <TableSelectionDialog
+      v-model="tableSelectionDialogVisible"
+      :tables="sourceTables"
+      :selectedTables="taskConfig.source_tables"
+      @confirm="handleTableSelection"
+    />
+    
+    <!-- Add Transformation Dialog (OLD - can be removed) -->
     <el-dialog 
       v-model="addTransformationDialogVisible" 
       title="Add Transformation" 
@@ -301,26 +364,40 @@
         <el-button type="primary" @click="addTransformation">Add</el-button>
       </template>
     </el-dialog>
+
+    <!-- Table Selection Dialog -->
+    <TableSelectionDialog
+      v-model="tableSelectionDialogVisible"
+      :tables="sourceTables"
+      :selectedTables="taskConfig.source_tables"
+      @confirm="handleTableSelection"
+    />
   </div>
 </template>
 
 <script setup>
 import { ref, computed, onMounted, watch } from 'vue'
 import { useRouter } from 'vue-router'
-import { VueFlow } from '@vueflow/core'
-import { Background } from '@vueflow/background'
-import { Controls } from '@vueflow/controls'
 import { useConnectorStore } from '@/stores/connectorStore'
 import { useTaskStore } from '@/stores/taskStore'
 import { ElMessage } from 'element-plus'
-import '@vueflow/core/dist/style.css'
-import '@vueflow/core/dist/theme-default.css'
-import '@vueflow/background/dist/style.css'
-import '@vueflow/controls/dist/style.css'
+import { List } from '@element-plus/icons-vue'
+import { VueFlow } from '@vue-flow/core'
+import { Background } from '@vue-flow/background'
+import { Controls } from '@vue-flow/controls'
+import '@vue-flow/core/dist/style.css'
+import '@vue-flow/core/dist/theme-default.css'
+import TableSelectionDialog from '@/components/TableSelectionDialog.vue'
+import SelectedTablesList from '@/components/SelectedTablesList.vue'
+import TableTransformDialog from '@/components/TableTransformDialog.vue'
 
 const router = useRouter()
+const route = router.currentRoute
 const connectorStore = useConnectorStore()
 const taskStore = useTaskStore()
+
+const isEditMode = computed(() => !!route.value.params.id)
+const taskId = computed(() => route.value.params.id)
 
 const taskConfig = ref({
   name: '',
@@ -329,20 +406,31 @@ const taskConfig = ref({
   destination_connector_id: null,
   source_tables: [],
   table_mappings: {},
+  table_configs: {},  // Per-table configuration
   mode: 'full_load',
   schedule_type: 'on_demand',
   schedule_interval_seconds: 60,
   batch_size_mb: 50,
-  batch_rows: 10000,
+  batch_rows: 50000,  // Default to 50k for good progress updates
+  parallel_tables: 3,  // Default to 3 parallel tables
   s3_file_format: 'parquet',
+  retry_enabled: true,
+  max_retries: 3,
+  retry_delay_seconds: 20,
+  cleanup_on_retry: true,
   handle_schema_drift: true,
-  transformations: []
+  transformations: []  // Global transformations (deprecated)
 })
+
+const batchMode = ref('rows')  // 'rows' or 'size'
 
 const sourceTables = ref([])
 const loadingTables = ref(false)
 const creating = ref(false)
 const addTransformationDialogVisible = ref(false)
+const tableSelectionDialogVisible = ref(false)
+const transformDialogVisible = ref(false)
+const currentTransformTable = ref('')
 
 const newTransform = ref({
   type: 'add_column',
@@ -451,8 +539,8 @@ const onSourceChange = async () => {
   sourceTables.value = []
 }
 
-const loadSourceTables = async (visible) => {
-  if (!visible || !taskConfig.value.source_connector_id || sourceTables.value.length > 0) return
+const loadSourceTables = async () => {
+  if (!taskConfig.value.source_connector_id) return
   
   loadingTables.value = true
   try {
@@ -461,6 +549,77 @@ const loadSourceTables = async (visible) => {
     ElMessage.error('Failed to load tables')
   } finally {
     loadingTables.value = false
+  }
+}
+
+const openTableSelection = async () => {
+  await loadSourceTables()
+  tableSelectionDialogVisible.value = true
+}
+
+const handleTableSelection = (selectedTableNames) => {
+  taskConfig.value.source_tables = selectedTableNames
+  
+  // Initialize table_configs for new tables
+  if (!taskConfig.value.table_configs) {
+    taskConfig.value.table_configs = {}
+  }
+  
+  // Add config for new tables
+  selectedTableNames.forEach(tableName => {
+    if (!taskConfig.value.table_configs[tableName]) {
+      taskConfig.value.table_configs[tableName] = {
+        enabled: true,
+        transformations: []
+      }
+    }
+  })
+  
+  // Remove config for unselected tables
+  const tableSet = new Set(selectedTableNames)
+  Object.keys(taskConfig.value.table_configs).forEach(tableName => {
+    if (!tableSet.has(tableName)) {
+      delete taskConfig.value.table_configs[tableName]
+    }
+  })
+}
+
+const openTransformDialog = (tableName) => {
+  currentTransformTable.value = tableName
+  transformDialogVisible.value = true
+}
+
+const getCurrentTableTransformations = () => {
+  if (!taskConfig.value.table_configs) return []
+  const tableConfig = taskConfig.value.table_configs[currentTransformTable.value]
+  return tableConfig?.transformations || []
+}
+
+const saveTableTransformations = (tableName, transformations) => {
+  if (!taskConfig.value.table_configs) {
+    taskConfig.value.table_configs = {}
+  }
+  if (!taskConfig.value.table_configs[tableName]) {
+    taskConfig.value.table_configs[tableName] = { enabled: true }
+  }
+  taskConfig.value.table_configs[tableName].transformations = transformations
+  ElMessage.success(`Transformations saved for ${tableName}`)
+}
+
+const toggleTable = (tableName) => {
+  if (!taskConfig.value.table_configs[tableName]) {
+    taskConfig.value.table_configs[tableName] = { enabled: true, transformations: [] }
+  }
+  taskConfig.value.table_configs[tableName].enabled = !taskConfig.value.table_configs[tableName].enabled
+}
+
+const removeTable = (tableName) => {
+  const index = taskConfig.value.source_tables.indexOf(tableName)
+  if (index > -1) {
+    taskConfig.value.source_tables.splice(index, 1)
+  }
+  if (taskConfig.value.table_configs[tableName]) {
+    delete taskConfig.value.table_configs[tableName]
   }
 }
 
@@ -504,11 +663,17 @@ const createTask = async () => {
 
   creating.value = true
   try {
-    await taskStore.createTask(taskConfig.value)
-    ElMessage.success('Task created successfully')
+    if (isEditMode.value) {
+      await taskStore.updateTask(taskId.value, taskConfig.value)
+      ElMessage.success('Task updated successfully')
+    } else {
+      await taskStore.createTask(taskConfig.value)
+      ElMessage.success('Task created successfully')
+    }
     router.push('/tasks')
   } catch (error) {
-    ElMessage.error(error.response?.data?.detail || 'Failed to create task')
+    const action = isEditMode.value ? 'update' : 'create'
+    ElMessage.error(error.response?.data?.detail || `Failed to ${action} task`)
   } finally {
     creating.value = false
   }
@@ -516,6 +681,43 @@ const createTask = async () => {
 
 onMounted(async () => {
   await connectorStore.fetchConnectors()
+  
+  // Load existing task if in edit mode
+  if (isEditMode.value) {
+    try {
+      const task = await taskStore.getTask(taskId.value)
+      taskConfig.value = {
+        name: task.name,
+        description: task.description || '',
+        source_connector_id: task.source_connector_id,
+        destination_connector_id: task.destination_connector_id,
+        source_tables: task.source_tables,
+        table_mappings: task.table_mappings || {},
+        table_configs: task.table_configs || {},
+        mode: task.mode,
+        schedule_type: task.schedule_type,
+        schedule_interval_seconds: task.schedule_interval_seconds || 3600,
+        batch_size_mb: task.batch_size_mb || 50,
+        batch_rows: task.batch_rows || 10000,
+        s3_file_format: task.s3_file_format || 'parquet',
+        handle_schema_drift: task.handle_schema_drift,
+        retry_enabled: task.retry_enabled !== undefined ? task.retry_enabled : true,
+        max_retries: task.max_retries || 3,
+        retry_delay_seconds: task.retry_delay_seconds || 20,
+        cleanup_on_retry: task.cleanup_on_retry !== undefined ? task.cleanup_on_retry : true,
+        transformations: task.transformations || []
+      }
+      
+      // Load tables for the source connector BEFORE user opens dialog
+      if (task.source_connector_id) {
+        await loadSourceTables()
+      }
+    } catch (error) {
+      ElMessage.error('Failed to load task')
+      router.push('/tasks')
+    }
+  }
+  
   updateFlowElements()
 })
 </script>

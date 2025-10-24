@@ -89,6 +89,7 @@ class Task(Base):
     # Table and data configuration
     source_tables = Column(JSON, nullable=False)  # List of table names to transfer
     table_mappings = Column(JSON, nullable=True)  # Custom table name mappings
+    table_configs = Column(JSON, nullable=True)  # Per-table configuration: {table_name: {transformations: [], enabled: true, ...}}
     
     # Transfer mode
     mode = Column(String(30), nullable=False, default="full_load")  # full_load, cdc, full_load_then_cdc
@@ -104,11 +105,20 @@ class Task(Base):
     # S3 specific configuration
     s3_file_format = Column(String(20), nullable=True)  # parquet, csv, json
     
-    # Data transformation rules
-    transformations = Column(JSON, nullable=True)  # List of transformation rules
+    # Data transformation rules (DEPRECATED - use table_configs instead)
+    transformations = Column(JSON, nullable=True)  # List of transformation rules (global fallback)
     
     # Schema drift handling
     handle_schema_drift = Column(Boolean, default=True)
+    
+    # Retry configuration
+    retry_enabled = Column(Boolean, default=True)
+    retry_delay_seconds = Column(Integer, default=20)  # Delay before retry
+    max_retries = Column(Integer, default=3)  # Maximum retry attempts per table
+    cleanup_on_retry = Column(Boolean, default=True)  # Delete partial files before retry
+    
+    # Parallel processing configuration
+    parallel_tables = Column(Integer, default=1)  # Number of tables to process in parallel (1 = sequential)
     
     # Status
     status = Column(String(20), default="created")
@@ -197,6 +207,10 @@ class TableExecution(Base):
     # Error details
     error_message = Column(Text, nullable=True)
     
+    # Retry tracking
+    retry_count = Column(Integer, default=0)
+    last_retry_at = Column(DateTime, nullable=True)
+    
     created_at = Column(DateTime, default=datetime.utcnow)
     
     # Relationships
@@ -215,3 +229,29 @@ class SystemMetric(Base):
     
     timestamp = Column(DateTime, default=datetime.utcnow, index=True)
 
+
+class VariableType(str, enum.Enum):
+    STATIC = "static"
+    DB_QUERY = "db_query"
+    EXPRESSION = "expression"
+
+
+class GlobalVariable(Base):
+    __tablename__ = "global_variables"
+    
+    id = Column(Integer, primary_key=True, index=True)
+    name = Column(String(100), unique=True, nullable=False, index=True)
+    description = Column(Text, nullable=True)
+    variable_type = Column(String(20), nullable=False)  # static, db_query, expression
+    
+    # Configuration based on variable_type
+    # For STATIC: {"value": "some_value"}
+    # For DB_QUERY: {"schema": "dbo", "table": "...", "column": "...", "where_conditions": [...]}
+    # For EXPRESSION: {"expression": "${otherVar} + '_suffix'"}
+    config = Column(JSON, nullable=False)
+    
+    # Metadata
+    is_active = Column(Boolean, default=True)
+    created_at = Column(DateTime, default=datetime.utcnow)
+    updated_at = Column(DateTime, default=datetime.utcnow, onupdate=datetime.utcnow)
+    created_by = Column(String(100), nullable=True)  # Future: user tracking

@@ -5,6 +5,9 @@ import schemas
 from database import get_db
 from services.task_service import TaskService
 import celery_tasks
+import logging
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/api/tasks", tags=["tasks"])
 
@@ -83,12 +86,25 @@ def control_task(
     action = control.action.lower()
     
     if action == "start":
+        # Reset task status to created before starting (in case it was stopped)
+        if task.status == "stopped":
+            TaskService.update_task_status(db, task_id, "created")
+            logger.info(f"Task {task_id} status reset from stopped to created")
+        
+        # Queue the start task
         celery_tasks.start_task.delay(task_id)
-        return {"message": "Task started"}
+        logger.info(f"Task {task_id} start requested")
+        return {"message": "Task start requested"}
     
     elif action == "stop":
+        # Update task status immediately (don't wait for Celery)
+        TaskService.update_task_status(db, task_id, "stopped")
+        
+        # Also queue the Celery stop task to revoke running tasks
         celery_tasks.stop_task.delay(task_id)
-        return {"message": "Task stopped"}
+        
+        logger.info(f"Task {task_id} stop requested - status updated to stopped")
+        return {"message": "Task stop requested"}
     
     elif action == "pause":
         celery_tasks.pause_task.delay(task_id)
@@ -115,3 +131,15 @@ def get_task_executions(
     
     return TaskService.get_task_executions(db, task_id, limit)
 
+
+@router.get("/{task_id}/detail", response_model=schemas.TaskDetailResponse)
+def get_task_detail(
+    task_id: int,
+    db: Session = Depends(get_db)
+):
+    """Get detailed task info with table-wise progress"""
+    task = TaskService.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    return TaskService.get_task_detail(db, task_id)
