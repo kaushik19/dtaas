@@ -123,15 +123,24 @@ def list_tables(
 def get_table_columns(
     connector_id: int,
     table_name: str,
-    schema: str = "dbo",
+    schema: Optional[str] = None,
     db: Session = Depends(get_db)
 ):
-    """Get column names for a specific table from source connector"""
+    """
+    Get column names for a specific table from source connector
+    
+    If schema is not provided, will use database-specific defaults:
+    - SQL Server: dbo
+    - PostgreSQL: public
+    - MySQL: None (uses database name)
+    - Oracle: username
+    """
     import logging
     logger = logging.getLogger(__name__)
     
     try:
-        logger.info(f"Getting columns for table {schema}.{table_name} from connector {connector_id}")
+        schema_display = f"{schema}." if schema else ""
+        logger.info(f"Getting columns for table {schema_display}{table_name} from connector {connector_id}")
         columns = ConnectorService.get_table_columns(db, connector_id, table_name, schema)
         logger.info(f"Successfully retrieved {len(columns)} columns")
         return columns

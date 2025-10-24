@@ -2,7 +2,10 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import models
 import schemas
-from connectors import SQLServerConnector, SnowflakeConnector, S3Connector
+from connectors import (
+    SQLServerConnector, PostgreSQLConnector, MySQLConnector, OracleConnector,
+    SnowflakeConnector, S3Connector
+)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -181,7 +184,21 @@ class ConnectorService:
             raise
     
     @staticmethod
-    def get_table_columns(db: Session, connector_id: int, table_name: str, schema: str = "dbo") -> List[str]:
+    def _get_default_schema(db_connector: models.Connector) -> Optional[str]:
+        """Get default schema based on database type"""
+        if db_connector.source_type == "sql_server":
+            return "dbo"
+        elif db_connector.source_type == "postgresql":
+            return "public"
+        elif db_connector.source_type == "mysql":
+            return None  # MySQL doesn't use schemas the same way
+        elif db_connector.source_type == "oracle":
+            # For Oracle, use the username as schema if not specified
+            return db_connector.connection_config.get("username", "").upper()
+        return None
+    
+    @staticmethod
+    def get_table_columns(db: Session, connector_id: int, table_name: str, schema: Optional[str] = None) -> List[str]:
         """Get column names for a specific table from a source connector"""
         db_connector = ConnectorService.get_connector(db, connector_id)
         if not db_connector or db_connector.connector_type != "source":
@@ -191,14 +208,29 @@ class ConnectorService:
             connector = ConnectorService._get_connector_instance(db_connector)
             connector.connect()
             
+            # Use provided schema or get default based on database type
+            if schema is None:
+                schema = ConnectorService._get_default_schema(db_connector)
+            
             # Get table schema (which includes column info)
             schema_info = connector.get_table_schema(table_name=table_name, schema=schema)
             
-            # Extract just column names
-            columns = [col['column_name'] for col in schema_info]
+            # Extract just column names (handle different response formats)
+            if schema_info and len(schema_info) > 0:
+                # Try different possible column name keys
+                first_col = schema_info[0]
+                if 'column_name' in first_col:
+                    columns = [col['column_name'] for col in schema_info]
+                elif 'name' in first_col:
+                    columns = [col['name'] for col in schema_info]
+                else:
+                    columns = [col.get('column_name', col.get('name', '')) for col in schema_info]
+            else:
+                columns = []
             
             connector.disconnect()
-            logger.info(f"Retrieved {len(columns)} columns for table {schema}.{table_name}")
+            schema_display = f"{schema}." if schema else ""
+            logger.info(f"Retrieved {len(columns)} columns for table {schema_display}{table_name}")
             return columns
         except Exception as e:
             logger.error(f"Error getting columns for table {table_name}: {str(e)}")
@@ -209,6 +241,12 @@ class ConnectorService:
         """Get connector class based on type string"""
         if connector_type_str == "sql_server":
             return SQLServerConnector
+        elif connector_type_str == "postgresql":
+            return PostgreSQLConnector
+        elif connector_type_str == "mysql":
+            return MySQLConnector
+        elif connector_type_str == "oracle":
+            return OracleConnector
         elif connector_type_str == "snowflake":
             return SnowflakeConnector
         elif connector_type_str == "s3":
@@ -229,6 +267,12 @@ class ConnectorService:
         if db_connector.connector_type == "source":
             if db_connector.source_type == "sql_server":
                 return SQLServerConnector(db_connector.connection_config)
+            elif db_connector.source_type == "postgresql":
+                return PostgreSQLConnector(db_connector.connection_config)
+            elif db_connector.source_type == "mysql":
+                return MySQLConnector(db_connector.connection_config)
+            elif db_connector.source_type == "oracle":
+                return OracleConnector(db_connector.connection_config)
         
         elif db_connector.connector_type == "destination":
             if db_connector.destination_type == "snowflake":

@@ -81,11 +81,25 @@ def execute_task(self, task_id: int):
             result = transfer_service.execute_cdc_sync(task, execution, progress_callback)
         
         elif task.mode == "full_load_then_cdc":
-            # First do full load
-            result = transfer_service.execute_full_load(task, execution, progress_callback)
-            # Then switch to CDC mode and start polling
-            task.mode = "cdc"
-            db.commit()
+            # Check if this is the first run or if there are tables that haven't completed full load
+            completed_tables = task.full_load_completed_tables or {}
+            tables_needing_full_load = [t for t in task.source_tables if t not in completed_tables]
+            
+            if tables_needing_full_load:
+                # First do full load only for tables that haven't been loaded yet
+                logger.info(f"Performing full load for {len(tables_needing_full_load)} tables that haven't been loaded yet")
+                result = transfer_service.execute_full_load(task, execution, progress_callback, 
+                                                           tables_to_load=tables_needing_full_load)
+                
+                # Mark these tables as completed
+                if not task.full_load_completed_tables:
+                    task.full_load_completed_tables = {}
+                for table in tables_needing_full_load:
+                    task.full_load_completed_tables[table] = datetime.utcnow().isoformat()
+                db.commit()
+            else:
+                logger.info("All tables have already completed full load, skipping to CDC")
+            
             # Start CDC polling for continuous sync
             if task.schedule_type in ["continuous", "interval"]:
                 execute_cdc_polling.delay(task_id)

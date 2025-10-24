@@ -237,6 +237,7 @@
             @configure-transform="openTransformDialog"
             @toggle-table="toggleTable"
             @remove-table="removeTable"
+            @bulk-transform="openBulkTransformDialog"
           />
         </el-card>
       </el-col>
@@ -249,6 +250,12 @@
       :source-connector-id="taskConfig.source_connector_id"
       :transformations="getCurrentTableTransformations()"
       @save="saveTableTransformations"
+    />
+
+    <!-- Bulk Transform Dialog -->
+    <BulkTransformDialog
+      v-model="bulkTransformDialogVisible"
+      @save="addBulkTransform"
     />
 
     <!-- Table Selection Dialog -->
@@ -381,7 +388,7 @@ import { useRouter } from 'vue-router'
 import { useConnectorStore } from '@/stores/connectorStore'
 import { useTaskStore } from '@/stores/taskStore'
 import { ElMessage } from 'element-plus'
-import { List } from '@element-plus/icons-vue'
+import { List, SetUp } from '@element-plus/icons-vue'
 import { VueFlow } from '@vue-flow/core'
 import { Background } from '@vue-flow/background'
 import { Controls } from '@vue-flow/controls'
@@ -390,6 +397,7 @@ import '@vue-flow/core/dist/theme-default.css'
 import TableSelectionDialog from '@/components/TableSelectionDialog.vue'
 import SelectedTablesList from '@/components/SelectedTablesList.vue'
 import TableTransformDialog from '@/components/TableTransformDialog.vue'
+import BulkTransformDialog from '@/components/BulkTransformDialog.vue'
 
 const router = useRouter()
 const route = router.currentRoute
@@ -430,6 +438,7 @@ const creating = ref(false)
 const addTransformationDialogVisible = ref(false)
 const tableSelectionDialogVisible = ref(false)
 const transformDialogVisible = ref(false)
+const bulkTransformDialogVisible = ref(false)
 const currentTransformTable = ref('')
 
 const newTransform = ref({
@@ -641,6 +650,77 @@ const addTransformation = () => {
 
 const removeTransformation = (index) => {
   taskConfig.value.transformations.splice(index, 1)
+}
+
+// Bulk transformations methods
+const openBulkTransformDialog = () => {
+  bulkTransformDialogVisible.value = true
+}
+
+const addBulkTransform = (transform) => {
+  let addedCount = 0
+  let skippedCount = 0
+  
+  // Apply the transformation to ALL selected tables
+  taskConfig.value.source_tables.forEach(tableName => {
+    // Initialize table config if it doesn't exist
+    if (!taskConfig.value.table_configs) {
+      taskConfig.value.table_configs = {}
+    }
+    if (!taskConfig.value.table_configs[tableName]) {
+      taskConfig.value.table_configs[tableName] = {
+        enabled: true,
+        transformations: []
+      }
+    }
+    if (!taskConfig.value.table_configs[tableName].transformations) {
+      taskConfig.value.table_configs[tableName].transformations = []
+    }
+    
+    // Check for duplicates based on transformation type
+    const existingTransforms = taskConfig.value.table_configs[tableName].transformations
+    let isDuplicate = false
+    
+    if (transform.type === 'add_column') {
+      // For add_column, check if column_name already exists
+      isDuplicate = existingTransforms.some(t => 
+        t.type === 'add_column' && 
+        t.config.column_name === transform.config.column_name
+      )
+    } else if (transform.type === 'rename_column') {
+      // For rename_column, check if same column_name exists
+      isDuplicate = existingTransforms.some(t => 
+        t.type === 'rename_column' && 
+        t.config.column_name === transform.config.column_name
+      )
+    } else if (transform.type === 'drop_column') {
+      // For drop_column, check if same column_name exists
+      isDuplicate = existingTransforms.some(t => 
+        t.type === 'drop_column' && 
+        t.config.column_name === transform.config.column_name
+      )
+    }
+    
+    // Add the transformation only if not duplicate
+    if (!isDuplicate) {
+      taskConfig.value.table_configs[tableName].transformations.push(transform)
+      addedCount++
+    } else {
+      skippedCount++
+    }
+  })
+  
+  // Show appropriate success message
+  if (addedCount > 0 && skippedCount === 0) {
+    ElMessage.success(`Transformation added to ${addedCount} table(s)`)
+  } else if (addedCount > 0 && skippedCount > 0) {
+    ElMessage.success({
+      message: `Transformation added to ${addedCount} table(s), skipped ${skippedCount} table(s) (already exists)`,
+      duration: 5000
+    })
+  } else if (addedCount === 0) {
+    ElMessage.warning('Transformation already exists in all selected tables')
+  }
 }
 
 const createTask = async () => {

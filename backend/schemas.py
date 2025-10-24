@@ -12,6 +12,9 @@ class ConnectorTypeEnum(str, Enum):
 
 class SourceTypeEnum(str, Enum):
     SQL_SERVER = "sql_server"
+    POSTGRESQL = "postgresql"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
 
 
 class DestinationTypeEnum(str, Enum):
@@ -186,6 +189,7 @@ class TaskBase(BaseModel):
     schedule_interval_seconds: Optional[int] = None
     s3_file_format: Optional[S3FileFormatEnum] = None
     transformations: Optional[List[TransformationRule]] = None  # Global transformations (deprecated)
+    bulk_transformations: Optional[List[TransformationRule]] = None  # Bulk transformations applied to all tables
     handle_schema_drift: bool = True
     retry_enabled: bool = True
     retry_delay_seconds: int = 20
@@ -211,6 +215,7 @@ class TaskUpdate(BaseModel):
     schedule_interval_seconds: Optional[int] = None
     s3_file_format: Optional[S3FileFormatEnum] = None
     transformations: Optional[List[TransformationRule]] = None
+    bulk_transformations: Optional[List[TransformationRule]] = None
     handle_schema_drift: Optional[bool] = None
     retry_enabled: Optional[bool] = None
     retry_delay_seconds: Optional[int] = None

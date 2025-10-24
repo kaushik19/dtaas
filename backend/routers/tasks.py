@@ -143,3 +143,54 @@ def get_task_detail(
         raise HTTPException(status_code=404, detail="Task not found")
     
     return TaskService.get_task_detail(db, task_id)
+
+
+@router.post("/{task_id}/force-full-load")
+def force_full_load(
+    task_id: int,
+    table_names: List[str],
+    db: Session = Depends(get_db)
+):
+    """Force full load for specific tables in a Full Load + CDC task
+    
+    This endpoint allows you to manually trigger full load for specific tables
+    even if they have already completed full load. This is useful for:
+    - Re-syncing data after source changes
+    - Recovering from data issues
+    - Testing
+    
+    Args:
+        task_id: Task ID
+        table_names: List of table names to reload
+    """
+    task = TaskService.get_task(db, task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    
+    # Validate that tables are in task configuration
+    invalid_tables = [t for t in table_names if t not in task.source_tables]
+    if invalid_tables:
+        raise HTTPException(
+            status_code=400, 
+            detail=f"Tables not in task configuration: {', '.join(invalid_tables)}"
+        )
+    
+    # Remove these tables from completed list
+    if task.full_load_completed_tables:
+        for table_name in table_names:
+            if table_name in task.full_load_completed_tables:
+                del task.full_load_completed_tables[table_name]
+    
+    db.commit()
+    
+    logger.info(f"Removed {len(table_names)} tables from completed full load list for task {task_id}")
+    logger.info(f"Tables to reload: {table_names}")
+    
+    # If task is running in full_load_then_cdc mode, trigger execution
+    # The next execution will pick up these tables for full load
+    return {
+        "status": "success",
+        "message": f"Marked {len(table_names)} table(s) for full load",
+        "tables": table_names,
+        "note": "Tables will be reloaded in the next task execution"
+    }

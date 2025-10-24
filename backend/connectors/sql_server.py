@@ -5,6 +5,8 @@ from sqlalchemy import create_engine
 from urllib.parse import quote_plus
 from .base import SourceConnector
 import logging
+import time
+import random
 
 logger = logging.getLogger(__name__)
 
@@ -25,69 +27,88 @@ class SQLServerConnector(SourceConnector):
         self.sqlalchemy_engine = None
     
     def connect(self):
-        """Establish connection to SQL Server"""
-        try:
-            if self.trusted_connection:
-                conn_str = (
-                    f"DRIVER={self.driver};"
-                    f"SERVER={self.server},{self.port};"
-                    f"DATABASE={self.database};"
-                    f"Trusted_Connection=yes;"
-                    f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
-                    f"Connection Timeout=60;"
-                    f"Login Timeout=60;"
-                )
-            else:
-                conn_str = (
-                    f"DRIVER={self.driver};"
-                    f"SERVER={self.server},{self.port};"
-                    f"DATABASE={self.database};"
-                    f"UID={self.username};"
-                    f"PWD={self.password};"
-                    f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
-                    f"Connection Timeout=60;"
-                    f"Login Timeout=60;"
-                )
-
-            self.connection = pyodbc.connect(conn_str, timeout=60)
-            
-            # Create SQLAlchemy engine for pandas (to avoid warnings)
+        """Establish connection to SQL Server with retry logic"""
+        # Add small random delay to avoid thundering herd problem
+        time.sleep(random.uniform(0.1, 0.5))
+        
+        max_retries = 5
+        retry_delay = 1  # Start with 1 second
+        
+        for attempt in range(max_retries):
             try:
                 if self.trusted_connection:
-                    sqlalchemy_conn_str = (
-                        f"mssql+pyodbc://@{self.server}:{self.port}/{self.database}"
-                        f"?driver={self.driver.replace('{', '').replace('}', '')}"
-                        f"&Trusted_Connection=yes"
-                        f"&TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'}"
+                    conn_str = (
+                        f"DRIVER={self.driver};"
+                        f"SERVER={self.server},{self.port};"
+                        f"DATABASE={self.database};"
+                        f"Trusted_Connection=yes;"
+                        f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
+                        f"Connection Timeout=120;"
+                        f"Login Timeout=120;"
                     )
                 else:
-                    params = quote_plus(conn_str)
-                    sqlalchemy_conn_str = f"mssql+pyodbc:///?odbc_connect={params}"
+                    conn_str = (
+                        f"DRIVER={self.driver};"
+                        f"SERVER={self.server},{self.port};"
+                        f"DATABASE={self.database};"
+                        f"UID={self.username};"
+                        f"PWD={self.password};"
+                        f"TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'};"
+                        f"Connection Timeout=120;"
+                        f"Login Timeout=120;"
+                    )
+
+                self.connection = pyodbc.connect(conn_str, timeout=120)
+                break  # Connection successful
                 
-                self.sqlalchemy_engine = create_engine(
-                    sqlalchemy_conn_str, 
-                    echo=False,
-                    pool_pre_ping=True,
-                    pool_recycle=3600,
-                    pool_size=5,  # Keep 5 connections in pool
-                    max_overflow=10,  # Allow up to 10 overflow connections
-                    pool_timeout=60,  # Wait 60 seconds for connection from pool
-                    connect_args={
-                        'timeout': 60,  # Connection timeout in seconds
-                        'connect_timeout': 60,
-                        'login_timeout': 60
-                    }
+            except pyodbc.Error as e:
+                if attempt < max_retries - 1:
+                    # Add jitter to retry delay
+                    jittered_delay = retry_delay + random.uniform(0, retry_delay * 0.5)
+                    logger.warning(
+                        f"Connection attempt {attempt + 1}/{max_retries} failed: {str(e)}. "
+                        f"Retrying in {jittered_delay:.2f} seconds..."
+                    )
+                    time.sleep(jittered_delay)
+                    retry_delay *= 2  # Exponential backoff
+                else:
+                    logger.error(f"Failed to connect to SQL Server after {max_retries} attempts")
+                    raise
+        
+        # Create SQLAlchemy engine for pandas (to avoid warnings)
+        try:
+            if self.trusted_connection:
+                sqlalchemy_conn_str = (
+                    f"mssql+pyodbc://@{self.server}:{self.port}/{self.database}"
+                    f"?driver={self.driver.replace('{', '').replace('}', '')}"
+                    f"&Trusted_Connection=yes"
+                    f"&TrustServerCertificate={'yes' if self.trust_server_certificate else 'no'}"
                 )
-                logger.info(f"SQLAlchemy engine created successfully with connection pooling")
-            except Exception as e:
-                logger.warning(f"Failed to create SQLAlchemy engine: {str(e)}, will use pyodbc connection")
-                self.sqlalchemy_engine = None
+            else:
+                params = quote_plus(conn_str)
+                sqlalchemy_conn_str = f"mssql+pyodbc:///?odbc_connect={params}"
             
-            logger.info(f"Connected to SQL Server: {self.server}/{self.database}")
-            return self.connection
+            self.sqlalchemy_engine = create_engine(
+                sqlalchemy_conn_str, 
+                echo=False,
+                pool_pre_ping=True,
+                pool_recycle=3600,
+                pool_size=5,  # Keep 5 connections in pool
+                max_overflow=10,  # Allow up to 10 overflow connections
+                pool_timeout=120,  # Wait 120 seconds for connection from pool
+                connect_args={
+                    'timeout': 120,  # Connection timeout in seconds
+                    'connect_timeout': 120,
+                    'login_timeout': 120
+                }
+            )
+            logger.info(f"SQLAlchemy engine created successfully with connection pooling")
         except Exception as e:
-            logger.error(f"Failed to connect to SQL Server: {str(e)}")
-            raise
+            logger.warning(f"Failed to create SQLAlchemy engine: {str(e)}, will use pyodbc connection")
+            self.sqlalchemy_engine = None
+        
+        logger.info(f"Connected to SQL Server: {self.server}/{self.database}")
+        return self.connection
     
     def disconnect(self):
         """Close SQL Server connection"""

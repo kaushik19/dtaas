@@ -12,7 +12,9 @@ class ConnectorType(str, enum.Enum):
 
 class SourceType(str, enum.Enum):
     SQL_SERVER = "sql_server"
-    # Future: MYSQL, POSTGRESQL, etc.
+    POSTGRESQL = "postgresql"
+    MYSQL = "mysql"
+    ORACLE = "oracle"
 
 
 class DestinationType(str, enum.Enum):
@@ -108,6 +110,9 @@ class Task(Base):
     # Data transformation rules (DEPRECATED - use table_configs instead)
     transformations = Column(JSON, nullable=True)  # List of transformation rules (global fallback)
     
+    # Bulk transformations - apply to ALL tables in the task
+    bulk_transformations = Column(JSON, nullable=True)  # List of transformations applied to all tables
+    
     # Schema drift handling
     handle_schema_drift = Column(Boolean, default=True)
     
@@ -133,6 +138,7 @@ class Task(Base):
     # CDC specific
     cdc_enabled_tables = Column(JSON, nullable=True)  # Tables with CDC enabled
     last_cdc_poll_at = Column(DateTime, nullable=True)
+    full_load_completed_tables = Column(JSON, nullable=True)  # Track which tables have completed full load {table_name: timestamp}
     
     # Relationships
     source_connector = relationship("Connector", foreign_keys=[source_connector_id], back_populates="source_tasks")

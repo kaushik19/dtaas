@@ -31,6 +31,42 @@ class TransferService:
             raise InterruptedError(f"Task {task.id} was stopped by user")
         return False
     
+    def _get_merged_transformations(self, task: models.Task, table_name: str) -> Optional[list]:
+        """
+        Merge bulk transformations with table-specific transformations.
+        Bulk transformations are applied first, then table-specific ones.
+        
+        Args:
+            task: Task model instance
+            table_name: Name of the table
+            
+        Returns:
+            Merged list of transformations or None
+        """
+        transformations = []
+        
+        # 1. Add bulk transformations first (apply to ALL tables)
+        if task.bulk_transformations:
+            transformations.extend(task.bulk_transformations)
+            logger.debug(f"Added {len(task.bulk_transformations)} bulk transformations for table {table_name}")
+        
+        # 2. Add table-specific transformations
+        table_transformations = None
+        if task.table_configs and table_name in task.table_configs:
+            table_config = task.table_configs.get(table_name, {})
+            if table_config.get('enabled', True):
+                table_transformations = table_config.get('transformations')
+                if table_transformations:
+                    transformations.extend(table_transformations)
+                    logger.debug(f"Added {len(table_transformations)} table-specific transformations for {table_name}")
+        
+        # 3. Fallback to global transformations if no per-table config
+        if not table_transformations and task.transformations:
+            transformations.extend(task.transformations)
+            logger.debug(f"Added {len(task.transformations)} global transformations for {table_name}")
+        
+        return transformations if transformations else None
+    
     def _get_thread_db(self):
         """Get or create a database session for the current thread"""
         if not hasattr(thread_local, 'db'):
@@ -42,24 +78,33 @@ class TransferService:
         self,
         task: models.Task,
         execution: models.TaskExecution,
-        progress_callback=None
+        progress_callback=None,
+        tables_to_load=None
     ) -> Dict[str, Any]:
-        """Execute full load data transfer"""
+        """Execute full load data transfer
+        
+        Args:
+            task: Task model instance
+            execution: TaskExecution model instance
+            progress_callback: Optional callback for progress updates
+            tables_to_load: Optional list of specific tables to load. If None, loads all tables in task.
+        """
         # Check if parallel processing is enabled
         parallel_tables = getattr(task, 'parallel_tables', 1)
         
         if parallel_tables > 1:
             logger.info(f"Using parallel processing with {parallel_tables} threads")
-            return self._execute_full_load_parallel(task, execution, progress_callback, parallel_tables)
+            return self._execute_full_load_parallel(task, execution, progress_callback, parallel_tables, tables_to_load)
         else:
             logger.info("Using sequential processing")
-            return self._execute_full_load_sequential(task, execution, progress_callback)
+            return self._execute_full_load_sequential(task, execution, progress_callback, tables_to_load)
     
     def _execute_full_load_sequential(
         self,
         task: models.Task,
         execution: models.TaskExecution,
-        progress_callback=None
+        progress_callback=None,
+        tables_to_load=None
     ) -> Dict[str, Any]:
         """Execute full load data transfer sequentially (original implementation)"""
         try:
@@ -75,7 +120,11 @@ class TransferService:
             total_rows_transferred = 0
             total_data_size_mb = 0.0
             
-            for table_name in task.source_tables:
+            # Use specified tables or all tables
+            tables = tables_to_load if tables_to_load is not None else task.source_tables
+            logger.info(f"Processing {len(tables)} tables: {tables}")
+            
+            for table_name in tables:
                 # Check if task has been stopped before starting next table
                 self._check_if_stopped(task)
                 
@@ -180,21 +229,13 @@ class TransferService:
                             if batch_df.empty:
                                 break
                             
-                            # Apply per-table transformations (preferred) or global transformations (fallback)
-                            table_transformations = None
-                            if task.table_configs and table_name in task.table_configs:
-                                table_config = task.table_configs.get(table_name, {})
-                                if table_config.get('enabled', True):
-                                    table_transformations = table_config.get('transformations')
+                            # Apply transformations (bulk + table-specific)
+                            transformations = self._get_merged_transformations(task, table_name)
                             
-                            # Fallback to global transformations if no per-table config
-                            if table_transformations is None and task.transformations:
-                                table_transformations = task.transformations
-                            
-                            if table_transformations:
+                            if transformations:
                                 batch_df = TransformationEngine.apply_transformations(
                                     batch_df,
-                                    table_transformations,
+                                    transformations,
                                     source_connector=source_connector,
                                     db_session=self.db,
                                     database_name=database_name,
@@ -295,7 +336,8 @@ class TransferService:
         task: models.Task,
         execution: models.TaskExecution,
         progress_callback=None,
-        max_workers: int = 3
+        max_workers: int = 3,
+        tables_to_load=None
     ) -> Dict[str, Any]:
         """Execute full load with parallel table processing"""
         try:
@@ -330,6 +372,10 @@ class TransferService:
             
             logger.info(f"Starting parallel processing of {total_tables} tables with {max_workers} workers")
             
+            # Use specified tables or all tables
+            tables = tables_to_load if tables_to_load is not None else task.source_tables
+            logger.info(f"Processing {len(tables)} tables in parallel: {tables}")
+            
             # Use ThreadPoolExecutor for parallel processing
             with ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="TableTransfer") as executor:
                 # Submit all tables for processing
@@ -343,7 +389,7 @@ class TransferService:
                         dest_config,
                         task_config
                     ): table_name
-                    for table_name in task.source_tables
+                    for table_name in tables
                 }
                 
                 # Process results as they complete
@@ -478,20 +524,30 @@ class TransferService:
                 if batch_df.empty:
                     break
                 
-                # Apply transformations
+                # Apply transformations (bulk + table-specific)
+                transformations = []
+                
+                # 1. Add bulk transformations first
+                if task_config.get('bulk_transformations'):
+                    transformations.extend(task_config['bulk_transformations'])
+                
+                # 2. Add table-specific transformations
                 table_transformations = None
                 if task_config.get('table_configs') and table_name in task_config['table_configs']:
                     table_config = task_config['table_configs'][table_name]
                     if table_config.get('enabled', True):
                         table_transformations = table_config.get('transformations')
+                        if table_transformations:
+                            transformations.extend(table_transformations)
                 
-                if table_transformations is None and task_config.get('transformations'):
-                    table_transformations = task_config['transformations']
+                # 3. Fallback to global transformations if no per-table config
+                if not table_transformations and task_config.get('transformations'):
+                    transformations.extend(task_config['transformations'])
                 
-                if table_transformations:
+                if transformations:
                     batch_df = TransformationEngine.apply_transformations(
                         batch_df,
-                        table_transformations,
+                        transformations,
                         source_connector=source_connector,
                         db_session=db,
                         database_name=database_name,
@@ -609,11 +665,12 @@ class TransferService:
                     )
                     
                     if not changes_df.empty:
-                        # Apply transformations
-                        if task.transformations:
+                        # Apply transformations (bulk + table-specific)
+                        transformations = self._get_merged_transformations(task, table_name)
+                        if transformations:
                             changes_df = TransformationEngine.apply_transformations(
                                 changes_df,
-                                task.transformations,
+                                transformations,
                                 source_connector=source_connector,
                                 db_session=self.db,
                                 database_name=database_name,

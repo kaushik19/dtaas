@@ -255,16 +255,17 @@ const fetchTableColumns = async () => {
     return
   }
   
-  // Parse schema.table format (e.g., "dbo.Customers")
+  // Parse schema.table format (e.g., "dbo.Customers", "public.users", "my_table")
   const tableParts = props.tableName.split('.')
-  const schema = tableParts.length > 1 ? tableParts[0] : 'dbo'
+  const schema = tableParts.length > 1 ? tableParts[0] : undefined  // Let backend determine default
   const table = tableParts.length > 1 ? tableParts[1] : props.tableName
   
   loadingColumns.value = true
   try {
     const axios = (await import('axios')).default
+    const params = schema ? { schema } : {}  // Only include schema if explicitly provided
     const response = await axios.get(`/api/connectors/${props.sourceConnectorId}/tables/${encodeURIComponent(table)}/columns`, {
-      params: { schema }
+      params
     })
     // Backend returns array directly, not wrapped in object
     tableColumns.value = response.data || []

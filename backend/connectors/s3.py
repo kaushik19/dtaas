@@ -344,7 +344,16 @@ class S3Connector(DestinationConnector):
                     # Replace remaining variables in filename
                     filename_pattern = filename_pattern.replace("$timestamp", timestamp)
                     filename_pattern = filename_pattern.replace("$uuid", str(uuid.uuid4()))
-                    file_key = f"{base_path}/{filename_pattern}"
+                    
+                    # Check if filename already has a valid file extension
+                    valid_extensions = ['.parquet', '.csv', '.json', '.txt', '.avro', '.orc']
+                    has_extension = any(filename_pattern.lower().endswith(ext) for ext in valid_extensions)
+                    
+                    if has_extension:
+                        file_key = f"{base_path}/{filename_pattern}"
+                    else:
+                        # Add the file format extension
+                        file_key = f"{base_path}/{filename_pattern}.{format_to_use}"
                 else:
                     # Path is directory only
                     base_path = resolved_path

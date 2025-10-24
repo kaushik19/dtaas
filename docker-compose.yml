@@ -94,7 +94,7 @@ services:
         condition: service_healthy
       backend:
         condition: service_healthy
-    command: celery -A celery_app worker --loglevel=info --pool=solo
+    command: celery -A celery_app worker --loglevel=info --concurrency=50
     restart: unless-stopped
     networks:
       - dtaas-network

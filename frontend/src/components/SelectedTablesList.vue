@@ -2,14 +2,25 @@
   <div class="selected-tables-list">
     <div class="list-header">
       <h3>Selected Tables ({{ tables.length }})</h3>
-      <el-button 
-        type="primary" 
-        size="small"
-        @click="$emit('openTableSelection')"
-      >
-        <el-icon><Edit /></el-icon>
-        Modify Selection
-      </el-button>
+      <div class="header-actions">
+        <el-button 
+          type="success" 
+          size="small"
+          @click="$emit('bulkTransform')"
+          :disabled="tables.length === 0"
+        >
+          <el-icon><SetUp /></el-icon>
+          Bulk Transform
+        </el-button>
+        <el-button 
+          type="primary" 
+          size="small"
+          @click="$emit('openTableSelection')"
+        >
+          <el-icon><Edit /></el-icon>
+          Modify Selection
+        </el-button>
+      </div>
     </div>
 
     <div v-if="tables.length === 0" class="empty-state">
@@ -89,7 +100,7 @@
 
 <script setup>
 import { computed } from 'vue'
-import { Edit, Document, Setting, Switch, Delete } from '@element-plus/icons-vue'
+import { Edit, Document, Setting, Switch, Delete, SetUp } from '@element-plus/icons-vue'
 
 const props = defineProps({
   tables: {
@@ -102,7 +113,7 @@ const props = defineProps({
   }
 })
 
-defineEmits(['openTableSelection', 'configureTransform', 'toggleTable', 'removeTable'])
+defineEmits(['openTableSelection', 'configureTransform', 'toggleTable', 'removeTable', 'bulkTransform'])
 
 const getTableStatus = (tableName) => {
   const config = props.tableConfigs[tableName]
@@ -132,6 +143,11 @@ const getTransformCount = (tableName) => {
   margin: 0;
   font-size: 16px;
   color: #303133;
+}
+
+.header-actions {
+  display: flex;
+  gap: 10px;
 }
 
 .empty-state {

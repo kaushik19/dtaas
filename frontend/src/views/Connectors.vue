@@ -120,8 +120,11 @@
         </el-form-item>
 
         <el-form-item v-if="connectorForm.connector_type === 'source'" label="Source Type">
-          <el-select v-model="connectorForm.source_type">
+          <el-select v-model="connectorForm.source_type" @change="handleSourceTypeChange">
             <el-option label="SQL Server" value="sql_server" />
+            <el-option label="PostgreSQL" value="postgresql" />
+            <el-option label="MySQL" value="mysql" />
+            <el-option label="Oracle" value="oracle" />
           </el-select>
         </el-form-item>
 
@@ -151,7 +154,101 @@
             <el-input v-model="connectorForm.connection_config.password" type="password" />
           </el-form-item>
           <el-form-item label="Port">
-            <el-input-number v-model="connectorForm.connection_config.port" :min="1" :max="65535" />
+            <el-input-number v-model="connectorForm.connection_config.port" :min="1" :max="65535" :placeholder="1433" />
+          </el-form-item>
+        </template>
+
+        <!-- PostgreSQL Config -->
+        <template v-if="connectorForm.source_type === 'postgresql'">
+          <el-divider content-position="left">PostgreSQL Configuration</el-divider>
+          <el-form-item label="Host">
+            <el-input v-model="connectorForm.connection_config.host" placeholder="localhost" />
+          </el-form-item>
+          <el-form-item label="Port">
+            <el-input-number v-model="connectorForm.connection_config.port" :min="1" :max="65535" :placeholder="5432" />
+          </el-form-item>
+          <el-form-item label="Database">
+            <el-input v-model="connectorForm.connection_config.database" placeholder="postgres" />
+            <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+              💡 The database to read data from
+            </div>
+          </el-form-item>
+          <el-form-item label="Username">
+            <el-input v-model="connectorForm.connection_config.username" placeholder="postgres" />
+          </el-form-item>
+          <el-form-item label="Password">
+            <el-input v-model="connectorForm.connection_config.password" type="password" />
+          </el-form-item>
+          <el-form-item label="SSL Mode">
+            <el-select v-model="connectorForm.connection_config.ssl_mode" placeholder="prefer">
+              <el-option label="Disable" value="disable" />
+              <el-option label="Allow" value="allow" />
+              <el-option label="Prefer" value="prefer" />
+              <el-option label="Require" value="require" />
+              <el-option label="Verify-CA" value="verify-ca" />
+              <el-option label="Verify-Full" value="verify-full" />
+            </el-select>
+            <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+              SSL connection mode (default: prefer)
+            </div>
+          </el-form-item>
+        </template>
+
+        <!-- MySQL Config -->
+        <template v-if="connectorForm.source_type === 'mysql'">
+          <el-divider content-position="left">MySQL Configuration</el-divider>
+          <el-form-item label="Host">
+            <el-input v-model="connectorForm.connection_config.host" placeholder="localhost" />
+          </el-form-item>
+          <el-form-item label="Port">
+            <el-input-number v-model="connectorForm.connection_config.port" :min="1" :max="65535" :placeholder="3306" />
+          </el-form-item>
+          <el-form-item label="Database">
+            <el-input v-model="connectorForm.connection_config.database" placeholder="mydb" />
+            <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+              💡 The database to read data from
+            </div>
+          </el-form-item>
+          <el-form-item label="Username">
+            <el-input v-model="connectorForm.connection_config.username" placeholder="root" />
+          </el-form-item>
+          <el-form-item label="Password">
+            <el-input v-model="connectorForm.connection_config.password" type="password" />
+          </el-form-item>
+          <el-form-item label="SSL Disabled">
+            <el-switch v-model="connectorForm.connection_config.ssl_disabled" />
+            <div style="font-size: 12px; color: #909399; margin-top: 4px;">
+              Disable SSL connection (not recommended for production)
+            </div>
+          </el-form-item>
+        </template>
+
+        <!-- Oracle Config -->
+        <template v-if="connectorForm.source_type === 'oracle'">
+          <el-divider content-position="left">Oracle Configuration</el-divider>
+          <el-form-item label="Host">
+            <el-input v-model="connectorForm.connection_config.host" placeholder="localhost" />
+          </el-form-item>
+          <el-form-item label="Port">
+            <el-input-number v-model="connectorForm.connection_config.port" :min="1" :max="65535" :placeholder="1521" />
+          </el-form-item>
+          <el-form-item label="Connection Type">
+            <el-radio-group v-model="connectorForm.connection_config.connection_type">
+              <el-radio label="service_name">Service Name</el-radio>
+              <el-radio label="sid">SID</el-radio>
+            </el-radio-group>
+          </el-form-item>
+          <el-form-item v-if="connectorForm.connection_config.connection_type === 'service_name'" label="Service Name">
+            <el-input v-model="connectorForm.connection_config.service_name" placeholder="ORCL" />
+          </el-form-item>
+          <el-form-item v-else label="SID">
+            <el-input v-model="connectorForm.connection_config.sid" placeholder="XE" />
+          </el-form-item>
+          <el-form-item label="Username">
+            <el-input v-model="connectorForm.connection_config.username" placeholder="system" />
+          </el-form-item>
+          <el-form-item label="Password">
+            <el-input v-model="connectorForm.connection_config.password" type="password" />
           </el-form-item>
         </template>
 
@@ -432,6 +529,47 @@ const handleTabChange = () => {
 const handleTypeChange = () => {
   connectorForm.value.source_type = null
   connectorForm.value.destination_type = null
+}
+
+const handleSourceTypeChange = () => {
+  // Set default config values based on source type
+  if (connectorForm.value.source_type === 'postgresql') {
+    connectorForm.value.connection_config = {
+      host: '',
+      port: 5432,
+      database: '',
+      username: '',
+      password: '',
+      ssl_mode: 'prefer'
+    }
+  } else if (connectorForm.value.source_type === 'mysql') {
+    connectorForm.value.connection_config = {
+      host: '',
+      port: 3306,
+      database: '',
+      username: '',
+      password: '',
+      ssl_disabled: false
+    }
+  } else if (connectorForm.value.source_type === 'oracle') {
+    connectorForm.value.connection_config = {
+      host: '',
+      port: 1521,
+      username: '',
+      password: '',
+      connection_type: 'service_name',
+      service_name: '',
+      sid: ''
+    }
+  } else if (connectorForm.value.source_type === 'sql_server') {
+    connectorForm.value.connection_config = {
+      server: '',
+      port: 1433,
+      database: '',
+      username: '',
+      password: ''
+    }
+  }
 }
 
 const handleDestinationTypeChange = () => {

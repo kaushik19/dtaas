@@ -175,6 +175,21 @@
                   </span>
                 </template>
               </el-table-column>
+              <el-table-column label="Actions" width="180" v-if="taskDetail?.task?.mode === 'full_load_then_cdc'">
+                <template #default="{ row }">
+                  <el-tooltip content="Re-run full load for this table" placement="top">
+                    <el-button 
+                      size="small" 
+                      type="warning"
+                      @click="forceFullLoad(row.table_name)"
+                      :disabled="row.status === 'running'"
+                    >
+                      <el-icon><Refresh /></el-icon>
+                      Force Full Load
+                    </el-button>
+                  </el-tooltip>
+                </template>
+              </el-table-column>
             </el-table>
           </el-tab-pane>
 
@@ -319,7 +334,7 @@
 <script setup>
 import { ref, onMounted, onUnmounted, nextTick } from 'vue'
 import { useRoute } from 'vue-router'
-import { ElMessage } from 'element-plus'
+import { ElMessage, ElMessageBox } from 'element-plus'
 import { VideoPlay, CloseBold, Refresh, Edit, SuccessFilled } from '@element-plus/icons-vue'
 import { useWebSocketStore } from '@/stores/websocketStore'
 import axios from 'axios'
@@ -358,6 +373,35 @@ const controlTask = async (action) => {
     setTimeout(fetchTaskDetail, 1000)
   } catch (error) {
     ElMessage.error(`Failed to ${action} task`)
+  }
+}
+
+const forceFullLoad = async (tableName) => {
+  try {
+    await ElMessageBox.confirm(
+      `This will mark "${tableName}" for full load re-sync. The table will be reloaded in the next task execution. Continue?`,
+      'Force Full Load',
+      {
+        confirmButtonText: 'Yes, Force Full Load',
+        cancelButtonText: 'Cancel',
+        type: 'warning',
+      }
+    )
+    
+    await axios.post(`/api/tasks/${taskId.value}/force-full-load`, [tableName])
+    
+    ElMessage({
+      type: 'success',
+      message: `Table "${tableName}" marked for full load. It will be reloaded when you start the task.`,
+      duration: 5000
+    })
+    
+    // Refresh task detail to show updated status
+    setTimeout(fetchTaskDetail, 1000)
+  } catch (error) {
+    if (error !== 'cancel') {
+      ElMessage.error(error.response?.data?.detail || 'Failed to force full load')
+    }
   }
 }
 
@@ -425,10 +469,21 @@ const handleWebSocketMessage = (event) => {
       }
       
       // Update table-level progress if available
-      if (taskUpdate.table_progress && newTaskDetail.full_load_progress) {
+      if (taskUpdate.table_progress) {
+        // Initialize full_load_progress if it doesn't exist
+        if (!newTaskDetail.full_load_progress) {
+          newTaskDetail.full_load_progress = []
+        }
+        
+        if (newTaskDetail.full_load_progress) {
         // Create a map for quick lookup
         const progressMap = new Map(
           taskUpdate.table_progress.map(tp => [tp.table_name, tp])
+        )
+        
+        // Track existing table names
+        const existingTableNames = new Set(
+          newTaskDetail.full_load_progress.map(t => t.table_name)
         )
         
         // Update existing table progress - create completely new array
@@ -449,8 +504,28 @@ const handleWebSocketMessage = (event) => {
           return { ...table }
         })
         
+        // Add any NEW tables that aren't in the existing list
+        taskUpdate.table_progress.forEach(newTable => {
+          if (!existingTableNames.has(newTable.table_name)) {
+            newTaskDetail.full_load_progress.push({
+              table_name: newTable.table_name,
+              status: newTable.status,
+              total_rows: newTable.total_rows,
+              processed_rows: newTable.processed_rows,
+              failed_rows: newTable.failed_rows,
+              progress_percent: newTable.progress_percent,
+              started_at: newTable.started_at,
+              completed_at: newTable.completed_at
+            })
+          }
+        })
+        
         // Also update CDC progress if available
         if (newTaskDetail.cdc_progress) {
+          const existingCdcTableNames = new Set(
+            newTaskDetail.cdc_progress.map(t => t.table_name)
+          )
+          
           newTaskDetail.cdc_progress = newTaskDetail.cdc_progress.map(table => {
             const update = progressMap.get(table.table_name)
             if (update) {
@@ -467,6 +542,23 @@ const handleWebSocketMessage = (event) => {
             }
             return { ...table }
           })
+          
+          // Add any NEW CDC tables that aren't in the existing list
+          taskUpdate.table_progress.forEach(newTable => {
+            if (!existingCdcTableNames.has(newTable.table_name)) {
+              newTaskDetail.cdc_progress.push({
+                table_name: newTable.table_name,
+                status: newTable.status,
+                total_rows: newTable.total_rows,
+                processed_rows: newTable.processed_rows,
+                failed_rows: newTable.failed_rows,
+                progress_percent: newTable.progress_percent,
+                started_at: newTable.started_at,
+                completed_at: newTable.completed_at
+              })
+            }
+          })
+        }
         }
       }
       
