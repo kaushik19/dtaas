@@ -2,10 +2,6 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 import models
 import schemas
-from connectors import (
-    SQLServerConnector, PostgreSQLConnector, MySQLConnector, OracleConnector,
-    SnowflakeConnector, S3Connector
-)
 import logging
 
 logger = logging.getLogger(__name__)
@@ -238,21 +234,45 @@ class ConnectorService:
     
     @staticmethod
     def _get_connector_class(connector_type_str: str):
-        """Get connector class based on type string"""
-        if connector_type_str == "sql_server":
-            return SQLServerConnector
-        elif connector_type_str == "postgresql":
-            return PostgreSQLConnector
-        elif connector_type_str == "mysql":
-            return MySQLConnector
-        elif connector_type_str == "oracle":
-            return OracleConnector
-        elif connector_type_str == "snowflake":
-            return SnowflakeConnector
-        elif connector_type_str == "s3":
-            return S3Connector
-        else:
-            raise ValueError(f"Unknown connector type: {connector_type_str}")
+        """Get connector class based on type string (with lazy imports)"""
+        try:
+            if connector_type_str == "sql_server":
+                from connectors import SQLServerConnector
+                return SQLServerConnector
+            elif connector_type_str == "postgresql":
+                from connectors import PostgreSQLConnector
+                return PostgreSQLConnector
+            elif connector_type_str == "mysql":
+                from connectors import MySQLConnector
+                return MySQLConnector
+            elif connector_type_str == "oracle":
+                try:
+                    from connectors import OracleConnector
+                    return OracleConnector
+                except ImportError as e:
+                    logger.error(f"Oracle connector not available: {e}")
+                    raise ValueError(
+                        "Oracle connector requires cx_Oracle package which is not installed. "
+                        "Please install it with: pip install cx-Oracle"
+                    )
+            elif connector_type_str == "snowflake":
+                try:
+                    from connectors import SnowflakeConnector
+                    return SnowflakeConnector
+                except ImportError as e:
+                    logger.error(f"Snowflake connector not available: {e}")
+                    raise ValueError(
+                        "Snowflake connector requires snowflake-connector-python package which is not installed. "
+                        "Please install it with: pip install snowflake-connector-python"
+                    )
+            elif connector_type_str == "s3":
+                from connectors import S3Connector
+                return S3Connector
+            else:
+                raise ValueError(f"Unknown connector type: {connector_type_str}")
+        except ImportError as e:
+            logger.error(f"Failed to import connector for type {connector_type_str}: {e}")
+            raise ValueError(f"Connector type '{connector_type_str}' is not available: {str(e)}")
     
     @staticmethod
     def _get_connector_instance_from_config(config: dict):

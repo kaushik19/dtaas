@@ -1,0 +1,16 @@
+**/.git
+**/.gitignore
+**/.env
+**/.venv
+**/venv
+**/__pycache__
+**/*.pyc
+**/node_modules
+**/.DS_Store
+**/README.md
+**/*.md
+**/dtaas.db
+**/.pytest_cache
+**/coverage
+**/*.log
+
